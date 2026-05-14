@@ -4,6 +4,7 @@ from snowglobe.cli.access import access_app
 from snowglobe.cli.optimizer import opt_app
 from snowglobe.cli.cost import cost_app
 from snowglobe.cli.diff import diff_app
+from snowglobe.cli.report import report_app
 from snowglobe.cli.shell import shell_app
 
 app = typer.Typer(
@@ -17,6 +18,7 @@ app.add_typer(access_app, name="access")
 app.add_typer(cost_app, name="cost")
 app.add_typer(diff_app, name="diff")
 app.add_typer(opt_app, name="optimize")
+app.add_typer(report_app, name="report")
 
 @app.callback(invoke_without_command=True)
 def main(
