@@ -1,0 +1,14 @@
+from enum import Enum
+
+class ObjectType(str, Enum):
+    DATABASE = "DATABASE"
+    SCHEMA = "SCHEMA"
+    TABLE = "TABLE"
+    VIEW = "VIEW"
+    MATERIALIZED_VIEW = "MATERIALIZED_VIEW"
+    WAREHOUSE = "WAREHOUSE"
+    STAGE = "STAGE"
+    FUNCTION = "FUNCTION"
+    PROCEDURE = "PROCEDURE"
+    ACCOUNT = "ACCOUNT"
+    UNKNOWN = "UNKNOWN"
