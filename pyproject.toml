@@ -1,0 +1,41 @@
+[project]
+name = "snowglobe"
+version = "0.1.0"
+description = "Explainable cost and access visibility for Snowflake"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+license = "Apache-2.0"
+authors = [
+    { name = "Jaryd Thornton", email = "jaryd90@gmail.com" }
+]
+dependencies = [
+    "cryptography==45.0.5",
+    "Jinja2==3.1.6",
+    "pandas==2.3.1",
+    "pydantic==2.11.7",
+    "pyOpenSSL==25.1.0",
+    "PyYAML==6.0.2",
+    "rich==14.0.0",
+    "snowflake_connector_python==3.16.0",
+    "sqlglot==27.1.0",
+    "typer==0.16.0",
+    "typing_extensions==4.14.1",
+    "sqlglot"
+]
+
+[project.scripts]
+snowglobe = "snowglobe.app:app"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["snowglobe*"]
+
+[tool.setuptools.package-data]
+snowglobe = ["templates/*.j2"]
+
+[build-system]
+requires = ["setuptools>=80.9", "wheel"]
+build-backend = "setuptools.build_meta"
