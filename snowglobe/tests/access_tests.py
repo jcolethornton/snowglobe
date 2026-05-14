@@ -1,4 +1,5 @@
-from snowglobe.models.enums import Privilege
+from snowglobe.models.privilege import Privilege
+
 
 def test_ownership_allows_select():
-    assert privilege_matches(Privilege.OWNERSHIP, Privilege.SELECT)
+    assert Privilege.matches(Privilege.OWNERSHIP, Privilege.SELECT)
