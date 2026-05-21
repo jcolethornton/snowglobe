@@ -1,14 +1,50 @@
 from enum import Enum
 
+
 class ObjectType(str, Enum):
+    # Core objects
+    ACCOUNT = "ACCOUNT"
     DATABASE = "DATABASE"
     SCHEMA = "SCHEMA"
     TABLE = "TABLE"
+    DYNAMIC_TABLE = "DYNAMIC TABLE"
     VIEW = "VIEW"
-    MATERIALIZED_VIEW = "MATERIALIZED_VIEW"
+    MATERIALIZED_VIEW = "MATERIALIZED VIEW"
+    EXTERNAL_TABLE = "EXTERNAL TABLE"
+
+    # Compute
     WAREHOUSE = "WAREHOUSE"
+
+    # Data pipeline
     STAGE = "STAGE"
+    STREAM = "STREAM"
+    PIPE = "PIPE"
+    TASK = "TASK"
+    FILE_FORMAT = "FILE FORMAT"
+    SEQUENCE = "SEQUENCE"
+    ALERT = "ALERT"
+
+    # Code
     FUNCTION = "FUNCTION"
     PROCEDURE = "PROCEDURE"
-    ACCOUNT = "ACCOUNT"
+
+    # Apps
+    STREAMLIT = "STREAMLIT"
+    NOTEBOOK = "NOTEBOOK"
+
+    # Governance
+    TAG = "TAG"
+    SECRET = "SECRET"
+
+    # Admin / Security
+    USER = "USER"
+    INTEGRATION = "INTEGRATION"
+    NETWORK_POLICY = "NETWORK POLICY"
+    RESOURCE_MONITOR = "RESOURCE MONITOR"
+
+    # AI / Services
+    CORTEX_SEARCH_SERVICE = "CORTEX SEARCH SERVICE"
+    INSTANCE_ROLE = "INSTANCE_ROLE"
+
+    # Fallback
     UNKNOWN = "UNKNOWN"
