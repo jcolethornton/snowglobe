@@ -9,7 +9,7 @@ class RoleGraph:
 
     def __init__(self, roles: Dict[str, set] | None = None):
         self.roles: Dict[str, set] = roles or {}
-        self.parents: Dict[str, Set[str]] = {}
+        self.parents: Dict[str, Set[str]] = self.roles
         self._ancestors: Dict[str, Set[str]] | None = None
         self.build_index()
 
@@ -77,6 +77,53 @@ class RoleGraph:
 
         dfs(from_role, [from_role], {from_role})
         return paths
+
+    def shortest_path(self, from_role: str, to_role: str) -> List[str] | None:
+        """
+        BFS-based shortest path from from_role to to_role.
+        Returns the path as a list of role keys, or None if no path exists.
+        """
+        from collections import deque
+
+        if from_role == to_role:
+            return [from_role]
+
+        queue = deque([(from_role, [from_role])])
+        visited: Set[str] = {from_role}
+
+        while queue:
+            current, path = queue.popleft()
+            for parent in self.parents.get(current, set()):
+                if parent == to_role:
+                    return path + [parent]
+                if parent not in visited:
+                    visited.add(parent)
+                    queue.append((parent, path + [parent]))
+
+        return None
+
+    def all_descendants(self, role_id: str) -> Set[str]:
+        """
+        Return all roles that inherit from role_id (i.e., role_id is in their ancestry).
+        Walks the graph in reverse: finds roles where role_id appears in parents[r].
+        """
+        # Build reverse index: child -> set of roles that inherit from it
+        children: Dict[str, Set[str]] = {}
+        for parent, inherited_from in self.parents.items():
+            for child in inherited_from:
+                children.setdefault(child, set()).add(parent)
+
+        # BFS/DFS from role_id following children edges
+        visited: Set[str] = set()
+        stack = [role_id]
+        while stack:
+            current = stack.pop()
+            for descendant in children.get(current, set()):
+                if descendant not in visited:
+                    visited.add(descendant)
+                    stack.append(descendant)
+
+        return visited
 
     def all_roles(self) -> List[str]:
         return list(self.parents.keys())
