@@ -44,11 +44,16 @@ class AccessGrant:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AccessGrant":
+        try:
+            obj_type = ObjectType(d["object_type"])
+        except ValueError:
+            obj_type = ObjectType.UNKNOWN
+
         return cls(
             role=d["role"],
             privilege=d["privilege"],
             object=ObjectRef(
-                object_type=ObjectType(d["object_type"]),
+                object_type=obj_type,
                 name=d["object_name"],
             ),
             granted_on=d["granted_on"],
