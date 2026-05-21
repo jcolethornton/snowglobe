@@ -208,3 +208,6 @@ __marimo__/
 
 # State
 snowglobe/state/*.json
+
+# Cortex
+.cortex/
