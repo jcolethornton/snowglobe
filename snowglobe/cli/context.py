@@ -1,7 +1,8 @@
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List
 from snowglobe.config.loader import SnowglobeConfig
 from snowglobe.snowflake.connection import SnowflakeReadOnly
+
 
 @dataclass
 class SnowglobeContext:
@@ -10,6 +11,18 @@ class SnowglobeContext:
     role: Optional[str] = None
     output: str = "table"
     verbose: bool = False
+
+    # Working state (used by shell and interactive prompts)
+    target_role: Optional[str] = None
+    username: Optional[str] = None
+    object_type: Optional[str] = None
+    object_name: Optional[str] = None
+    privilege: Optional[str] = None
+
+    # Preloaded graphs (populated by shell or on-demand)
+    user_graph: Any = None
+    role_graph: Any = None
+    object_index: Optional[Dict[str, List[str]]] = None
 
     def load_profile(self):
         config = SnowglobeConfig()
@@ -29,37 +42,3 @@ class SnowglobeContext:
                 private_key_pwd=self.profile.get("private_key_pwd")
             )
         return self._sf
-
-class ShellContext:
-    def __init__(self, app_context):
-        self.app_context = app_context
-        self.user_graph = None
-        self.role_graph = None
-        self.grants = None
-        self.resolver = None
-
-        # working state
-        self.inspect_type = None
-        self.username = None
-        self.role = None
-        self.object_type = None
-        self.object_name = None
-        self.privilege = None
-
-    def load_profile(self):
-        return self.app_context.load_profile()
-
-    def connect(self):
-        return self.app_context.connect()
-
-    @property
-    def profile(self):
-        return self.app_context.profile
-
-    @property
-    def verbose(self):
-        return self.app_context.verbose
-
-    @property
-    def output(self):
-        return self.app_context.output
