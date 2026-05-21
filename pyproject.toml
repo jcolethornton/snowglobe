@@ -3,7 +3,7 @@ name = "snowglobe"
 version = "0.1.0"
 description = "Explainable cost and access visibility for Snowflake"
 readme = "README.md"
-requires-python = ">=3.11,<4.0"
+requires-python = ">=3.12.3,<4.0"
 license = "Apache-2.0"
 authors = [
     { name = "Jaryd Thornton", email = "jaryd90@gmail.com" }
@@ -12,6 +12,7 @@ dependencies = [
     "cryptography==45.0.5",
     "Jinja2==3.1.6",
     "pandas==2.3.1",
+    "prompt_toolkit>=3.0.0",
     "pydantic==2.11.7",
     "pyOpenSSL==25.1.0",
     "PyYAML==6.0.2",
