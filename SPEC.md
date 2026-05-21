@@ -180,34 +180,30 @@ snowglobe/
 ├── __main__.py              # Entry point → calls cli.app:app()
 ├── __init__.py              # Empty
 ├── cli/                     # CLI layer (Typer + interactive shell)
-│   ├── app.py              # Root Typer app, profile loading, global options
-│   ├── shell.py            # Interactive REPL shell (prompt_toolkit)
-│   ├── router.py           # Shell command dispatcher
-│   ├── registry.py         # @command decorator + COMMANDS dict
-│   ├── context.py          # SnowglobeContext (Typer) + ShellContext (REPL)
-│   ├── prompts.py          # Interactive fuzzy-completion prompts for access queries
-│   ├── shell_completer.py  # Tab-completion for shell (use/inspect/set)
-│   ├── access.py           # `snowglobe access check` command
+│   ├── app.py              # Root Typer app, no-args → shell, subcommands for headless
+│   ├── shell.py            # Interactive REPL (prompt_toolkit), all shell commands
+│   ├── context.py          # SnowglobeContext — unified context (CLI + shell state)
+│   ├── prompts.py          # Interactive fuzzy-completion prompts, TTY-aware
+│   ├── shell_completer.py  # Tab-completion for shell commands
+│   ├── access.py           # `snowglobe access check|create` commands
 │   ├── cost.py             # `snowglobe cost queries` command
 │   ├── optimizer.py        # `snowglobe optimize query|top-queries` commands
+│   ├── debug.py            # `snowglobe debug` — connection diagnostics
 │   ├── diff.py             # `snowglobe diff access` (stub)
-│   ├── report.py           # `snowglobe report cost|access` (stubs)
-│   └── commands/           # Shell-mode commands (use, set, access)
-│       ├── use.py          # `use role|user <name>`
-│       ├── set.py          # `set object_type|object_name|privilege <value>`
-│       └── access.py       # `access` (runs query with current shell state)
+│   └── report.py           # `snowglobe report cost|access` (stubs)
 ├── config/
-│   └── loader.py           # Loads ~/.snowglobe/config.yaml, supports env var expansion
+│   └── loader.py           # Loads ~/.snowglobe/config.yaml, env var expansion
 ├── snowflake/
 │   └── connection.py       # SnowflakeReadOnly — enforces no DDL, context manager
 ├── state/
-│   └── state.py            # StateManager — JSON file persistence + pandas loader
-├── collectors/             # Data collection from Snowflake
-│   ├── access.py           # AccessCollector — users, roles, grants via SHOW commands
+│   ├── db.py              # StateDB — SQLite backend (grants, role_edges, user_roles, metadata)
+│   └── state.py           # StateManager — legacy JSON persistence (deprecated)
+├── collectors/             # Data collection from Snowflake (ACCOUNT_USAGE bulk queries)
+│   ├── access.py           # AccessCollector — users, roles, grants, object index, CREATE grants
 │   ├── query_history.py    # QueryCollector — warehouse query history
 │   └── query_profile.py    # QueryProfileCollector — GET_QUERY_OPERATOR_STATS
 ├── core/                   # Service orchestration layer
-│   ├── access_service.py   # AccessService — state mgmt + resolver + explainer wiring
+│   ├── access_service.py   # AccessService — inspect_access + inspect_create + state mgmt
 │   ├── query_service.py    # QueryService — query history state + sorting/filtering
 │   └── optimizer.py        # QueryOptimizerService — profile collection + analysis
 ├── engines/                # Analysis/computation engines
@@ -224,18 +220,17 @@ snowglobe/
 ├── models/                 # Data models (dataclasses)
 │   ├── access.py           # AccessGrant — resolved grant with provenance
 │   ├── access_path.py      # AccessPath — chain from identity to grant
-│   ├── grant.py            # Grant — simpler grant model (unused currently)
 │   ├── object_ref.py       # ObjectRef — (ObjectType, FQN)
-│   ├── object_type.py      # ObjectType enum (DATABASE, TABLE, VIEW, etc.)
+│   ├── object_type.py      # ObjectType enum (27 types incl. STREAMLIT, NOTEBOOK, etc.)
 │   ├── optimizer.py        # QueryOptimizationResult, ExpensiveOperator
 │   ├── privilege.py        # Privilege enum + semantic matching (OWNERSHIP implies all)
 │   └── query.py            # QueryProfile, QueryStats
 ├── queries/
 │   └── query_history.py    # SQL template for warehouse query cost estimation
 ├── output/
-│   └── cli.py              # Formatting: Rich tables, text, JSON, tree rendering
+│   └── cli.py              # Formatting: Rich tables, text, JSON, tree, create output
 └── tests/
-    └── access_tests.py     # Minimal test stub
+    └── access_tests.py     # Test stub
 ```
 
 ---
@@ -252,12 +247,21 @@ snowglobe/
 
 #### Context Objects
 
-- **`SnowglobeContext`** (`cli/context.py`): Typer-level context holding profile, connection factory, output format, and verbosity. Lazy-connects to Snowflake.
-- **`ShellContext`** (`cli/context.py`): Wraps `SnowglobeContext` for the interactive shell. Holds mutable working state (`username`, `role`, `object_type`, `object_name`, `privilege`) plus preloaded graphs/grants.
+- **`SnowglobeContext`** (`cli/context.py`): Unified context for both CLI and shell. Holds profile, connection factory, output format, verbosity, working state (`target_role`, `username`, `object_type`, `object_name`, `privilege`), and preloaded graphs/grants/object_index.
 
 #### State Management
 
-- **`StateManager`** (`state/state.py`): Simple JSON file persistence under `snowglobe/state/`. Supports save, load, and `get_dataframe()` (pandas). State files are gitignored.
+- **`StateDB`** (`state/db.py`): SQLite-backed state store (`~/.snowglobe/state/snowglobe.db`). Stores all 782K grants, role hierarchy edges, and user role assignments in indexed tables. Replaces the previous JSON-file approach. Supports full refresh (bulk replace) and incremental refresh (upsert/delete). Object index is derived from the grants table via `SELECT DISTINCT granted_on, fqn`. Uses WAL journal mode for concurrent read performance.
+
+**SQLite Schema:**
+```
+grants (grantee, privilege, granted_on, name, table_catalog, table_schema, granted_by, granted_to, fqn)
+role_edges (parent, child)
+user_roles (username, role)
+metadata (key, value)  — stores refreshed_at timestamp
+```
+
+**Indexes:** `idx_grants_object`, `idx_grants_fqn`, `idx_grants_grantee`, `idx_grants_privilege`, `idx_role_edges_parent`, `idx_role_edges_child`, `idx_user_roles_user`
 
 #### Graphs
 
@@ -266,7 +270,7 @@ snowglobe/
 
 #### Collectors
 
-- **`AccessCollector`** (`collectors/access.py`): Executes `SHOW USERS`, `SHOW ROLES`, `SHOW DATABASE ROLES`, and `SHOW GRANTS TO ROLE/USER` to build UserGraph, RoleGraph, and List[AccessGrant]. Uses naming conventions: `ACCOUNT_ROLE::<name>` and `DATABASE_ROLE::<db>::<name>`.
+- **`AccessCollector`** (`collectors/access.py`): Uses `SNOWFLAKE.ACCOUNT_USAGE` bulk queries (not N+1 SHOW commands) for performance. Collects: user roles (`GRANTS_TO_USERS`), role hierarchy (`GRANTS_TO_ROLES`), high-level object grants (DATABASE/WAREHOUSE/ACCOUNT), object FQN index for completions, and CREATE privilege grants. Falls back to `SHOW GRANTS ON` for object types not in ACCOUNT_USAGE (STREAMLIT, NOTEBOOK, DYNAMIC TABLE, ALERT, TAG, SECRET).
 - **`QueryCollector`** (`collectors/query_history.py`): Queries `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` with a credit estimation formula based on warehouse size multiplier.
 - **`QueryProfileCollector`** (`collectors/query_profile.py`): Fetches SQL text and operator-level stats via `GET_QUERY_OPERATOR_STATS(<query_id>)`.
 
@@ -288,17 +292,38 @@ snowglobe/
 
 ---
 
-### Data Flow
+#### Data Flow
 
 #### Access Check Flow
 
 ```
-CLI (access check) → AccessService
-  → StateManager (load/refresh JSON state)
-  → resolve_access_inputs (interactive prompts if args missing)
-  → AccessResolver (build from grants + graphs)
-  → AccessExplainer (user_access / role_access)
+CLI (access check) or Shell (access) → resolve_access_inputs (TTY-aware prompts)
+  → AccessService.inspect_access()
+    → Load role graph + user graph from SQLite (in-memory)
+    → Query grants for target object from SQLite (indexed, <100ms)
+    → AccessResolver (build from targeted grants + graphs)
+    → AccessExplainer (user_access / role_access)
   → Output formatter (text or JSON)
+```
+
+#### Reverse Lookup Flow (whoaccess)
+
+```
+CLI (access whoaccess) or Shell (whoaccess) → AccessService.inspect_reverse()
+  → Query grants for target object from SQLite
+  → For each privilege: find direct roles, descendants (via role graph), users
+  → Output: per-privilege breakdown with roles + users + counts
+```
+
+#### CREATE Privilege Flow
+
+```
+CLI (access create) or Shell (create) → AccessService.inspect_create()
+  → Load role graph + user graph from SQLite
+  → Resolve effective roles (transitive closure)
+  → Query CREATE grants from SQLite (indexed by privilege + grantee)
+  → Resolve role inheritance paths (when scoped)
+  → Output: scope hierarchy + via_roles + paths
 ```
 
 #### Query Cost Flow
@@ -319,17 +344,17 @@ CLI (optimize query) → QueryOptimizerService
   → QueryOptimizerEngine (heuristic detection + scoring)
   → Operator tree construction + cost attribution
   → CortexOptimizer (AI_COMPLETE for AI suggestions)
-  → Output: suggestions, tree, cost breakdown, AI result (also writes ai_suggestion.sql)
+  → Output: suggestions, tree, cost breakdown, AI result
 ```
 
 #### Interactive Shell Flow
 
 ```
-CLI (shell) → start_shell
-  → AccessService.get_graphs() (preload state)
+`snowglobe` (no args) → start_shell(context)
+  → AccessService.get_graphs() (preload from cache, auto-refresh if missing)
   → PromptSession with FuzzyCompleter
-  → REPL loop: dispatch(text, ctx) → COMMANDS[cmd](ctx, args)
-  → Shell commands: use (set user/role), set (set object/privilege), access (run query)
+  → REPL loop: _dispatch(text, ctx) → handler functions
+  → Commands: use, set, access, create, cost, optimize, refresh, status, debug, help
 ```
 
 ---
@@ -338,14 +363,47 @@ CLI (shell) → start_shell
 
 | Command | Status | Description |
 |---------|--------|-------------|
-| `snowglobe shell` | Working | Interactive REPL with fuzzy completion |
-| `snowglobe access check` | Working | Explain access for user/role on object |
+| `snowglobe` (no args) | Working | Launches interactive shell |
+| `snowglobe refresh` | Working | Refresh cached state from Snowflake (incremental by default) |
+| `snowglobe refresh --full` | Working | Full refresh (rebuilds entire SQLite DB) |
+| `snowglobe debug` | Working | Connection diagnostics (8-step checklist) |
+| `snowglobe access check` | Working | Explain access for user/role on object (with role paths) |
+| `snowglobe access create` | Working | Check CREATE privileges with scope hierarchy |
+| `snowglobe access whoaccess` | Working | Reverse lookup: who can access this object? |
 | `snowglobe cost queries` | Working | Top expensive queries by credits or bytes |
 | `snowglobe optimize query --query-id <id>` | Working | Full query analysis + AI suggestions |
 | `snowglobe optimize top-queries` | Working | Batch analysis of top N queries |
 | `snowglobe diff access` | Stub | Not implemented |
 | `snowglobe report cost` | Stub | Not implemented |
 | `snowglobe report access` | Stub | Not implemented |
+
+### Shell Commands
+
+The shell uses a **guided wizard** (`check`) as the primary entry point, with direct shortcuts for power users. All commands have **fuzzy tab-completion** for arguments (usernames, roles, object FQNs).
+
+| Command | Description |
+|---------|-------------|
+| `check` | **Guided wizard** — walks through access & privilege checks step by step |
+| `roles <user>` | What roles does a user have? (direct + inherited) |
+| `members <role>` | Who has this role? (direct + inherited users) |
+| `path <from> <to>` | Does one role inherit from another? (shows inheritance paths) |
+| `cost` | Show top expensive queries |
+| `optimize <id>` | Analyze a specific query |
+| `refresh` | Refresh cached state from Snowflake |
+| `status` | Show current working state + cache age |
+| `debug` | Run connection diagnostics |
+| `help` / `?` | Show available commands |
+| `exit` | Exit the shell |
+
+**Shortcuts (power users):**
+
+| Command | Description |
+|---------|-------------|
+| `use role <name>` | Set active role for queries |
+| `use user <name>` | Set active user for queries |
+| `access` | Direct: can user/role access an object? |
+| `whoaccess` | Direct: who can access an object? |
+| `create` | Direct: where can a role create objects? |
 
 ### Global CLI Options
 
@@ -376,11 +434,13 @@ CLI (shell) → start_shell
 ### Design Patterns
 
 1. **Service-per-domain**: Each domain (access, cost, optimization) has a service class that orchestrates collectors, engines, and state.
-2. **State caching**: Snowflake data is collected once and persisted to JSON. Subsequent runs load from disk unless `--refresh-state` is passed.
-3. **Graph-based access resolution**: Role hierarchy is modeled as a directed graph. Access is resolved by computing transitive closures and finding all paths.
-4. **Heuristic + AI**: Query optimization uses rule-based heuristics first, then feeds those results to Cortex AI for synthesized recommendations.
-5. **Read-only enforcement**: The connection layer actively blocks DDL/DCL statements at the application level.
-6. **Two-mode CLI**: Traditional subcommands (Typer) for scripted use + interactive shell (prompt_toolkit) for exploratory use.
+2. **SQLite-backed state**: All Snowflake metadata (782K grants, role edges, user assignments) stored in a single indexed SQLite database (`~/.snowglobe/state/snowglobe.db`). Provides instant local lookups (<100ms) for any object. Auto-refreshes on first run.
+3. **Incremental refresh with watermarks**: Uses `GREATEST(MODIFIED_ON, COALESCE(DELETED_ON, '1970-01-01')) >= last_refresh` to fetch only changed rows. Reduces refresh from ~2.5 min to ~13s.
+4. **Graph-based access resolution**: Role hierarchy is modeled as a directed graph. Access is resolved by computing transitive closures and finding all paths. `all_descendants()` enables reverse lookups.
+5. **Heuristic + AI**: Query optimization uses rule-based heuristics first, then feeds those results to Cortex AI for synthesized recommendations.
+6. **Read-only enforcement**: The connection layer actively blocks DDL/DCL statements at the application level.
+7. **TTY-aware dual mode**: Same commands work interactively (fuzzy prompts for missing args) and headlessly (error on missing args). Detected via `sys.stdin.isatty()`.
+8. **Object index derived from grants**: No separate collection needed — `SELECT DISTINCT granted_on, fqn FROM grants` provides tab-completion data. (Exception: STREAMLIT/NOTEBOOK/DYNAMIC TABLE/ALERT need SHOW enumeration as they're not in GRANTS_TO_ROLES.)
 
 ---
 
@@ -388,14 +448,14 @@ CLI (shell) → start_shell
 
 1. **No `daily` command** — Specified but not implemented.
 2. **No CSV output** — Only table and JSON formats exist.
-3. **No Slack integration** — Mentioned in spec but not implemented.
-4. **Diff/Report commands are stubs** — Raise `NotImplementedError`.
-5. **Test coverage is minimal** — Single test file with an import error (`models.enums` doesn't exist).
-6. **State path is relative** — `StateManager` uses `snowglobe/state/` relative to CWD, not a fixed location.
-7. **`CortexOptimizer` SQL syntax** — The AI_COMPLETE call has malformed SQL (response_format isn't properly formatted as a string parameter).
-8. **No `cost summary` or `cost delta`** — Only `cost queries` exists.
-9. **`report_app` is defined but not registered** in `app.py`.
-10. **`Grant` model** (`models/grant.py`) exists but is unused; `AccessGrant` is the active model.
+3. **Diff/Report commands are stubs** — Raise `NotImplementedError`.
+4. **Test coverage is minimal** — Single test file.
+5. **STREAMLIT/NOTEBOOK/DYNAMIC TABLE/ALERT** not in object completions (requires SHOW enumeration during refresh).
+6. **ACCOUNT_USAGE has 45 min latency** — Very recent grant changes won't appear.
+7. **No `cost summary` or `cost delta`** — Only `cost queries` exists.
+8. **Future grants not tracked** — Low priority (not needed for existing object access checks).
+9. **Empty object_name causes crash** — Should validate before `.upper()` call.
+10. **Privilege suggestions not context-aware** — Same list shown for all object types.
 
 ---
 
