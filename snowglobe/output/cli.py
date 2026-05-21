@@ -32,21 +32,149 @@ def print_table(df: pd.DataFrame, title=None, no_wrap=True):
 def format_access_text(explain: dict) -> str:
     lines = []
 
+    # Determine if this is a user or role query
+    identity = explain.get("user") or explain.get("role")
+    identity_type = "User" if "user" in explain else "Role"
+    access_paths = explain.get("user_access_paths") or explain.get("role_access_paths") or {}
+    has_privilege = explain.get("user_has_privilege") or explain.get("role_has_privilege", False)
 
-    if explain.get("roles_with_privilege"):
+    if not explain.get("object_exists"):
+        lines.append(f"Object '{explain['object_name']}' not found in grants.")
+        return "\n".join(lines)
 
-        lines.append(f"User '{explain['user']}' CAN '{explain['privilege']}' on {explain['object_name']}")
-        
-        for privilege, chains in explain['user_access_paths'].items():
+    if has_privilege and access_paths:
+        lines.append(f"{identity_type} '{identity}' CAN '{explain['privilege']}' on {explain['object_name']}")
+
+        for privilege, chains in access_paths.items():
             lines.append(f"\nPrivilege: {privilege}")
             for i, chain in enumerate(chains, start=1):
                 lines.append(f"  Path {i}: {' -> '.join(chain)}")
 
     else:
-        lines.append(f"User '{explain['user']}' CANNOT '{explain['privilege']}' on {explain['object_name']}")
-        lines.append("Roles with privilege:")
-        for role in explain['roles_with_privilege']:
-            lines.append(f"  - {role}")
+        lines.append(f"{identity_type} '{identity}' CANNOT '{explain['privilege']}' on {explain['object_name']}")
+        if explain.get("roles_with_privilege"):
+            lines.append("Roles with privilege:")
+            for role in explain['roles_with_privilege']:
+                lines.append(f"  - {role}")
+
+    return "\n".join(lines)
+
+def format_reverse_text(result: dict) -> str:
+    lines = []
+    obj_type = result["object_type"]
+    obj_name = result["object_name"]
+
+    if not result.get("object_exists"):
+        lines.append(f"Object '{obj_name}' ({obj_type}) not found in grants.")
+        return "\n".join(lines)
+
+    privilege_filter = result.get("privilege_filter")
+    if privilege_filter:
+        lines.append(f"Who can '{privilege_filter}' on {obj_type} {obj_name}?")
+    else:
+        lines.append(f"Who can access {obj_type} {obj_name}?")
+
+    privileges = result.get("privileges", {})
+    if not privileges:
+        lines.append("  No grants found.")
+        return "\n".join(lines)
+
+    for priv, info in privileges.items():
+        direct_roles = info["direct_roles"]
+        inherited_roles = info["inherited_roles"]
+        users = info["users"]
+
+        total_roles = len(direct_roles) + len(inherited_roles)
+        lines.append(f"\n  {priv} ({total_roles} roles, {len(users)} users)")
+
+        if direct_roles:
+            lines.append(f"    Direct grants:")
+            for r in direct_roles:
+                lines.append(f"      - {r}")
+
+        if inherited_roles:
+            lines.append(f"    Inherited via role hierarchy ({len(inherited_roles)}):")
+            for r in inherited_roles[:20]:
+                lines.append(f"      - {r}")
+            if len(inherited_roles) > 20:
+                lines.append(f"      ... and {len(inherited_roles) - 20} more")
+
+        if users:
+            lines.append(f"    Users ({len(users)}):")
+            for u in users[:30]:
+                via = u["via_roles"][0] if len(u["via_roles"]) == 1 else f"{len(u['via_roles'])} roles"
+                lines.append(f"      - {u['user']} (via {via})")
+            if len(users) > 30:
+                lines.append(f"      ... and {len(users) - 30} more")
+
+    return "\n".join(lines)
+
+
+def format_create_text(result: dict) -> str:
+    lines = []
+    identity = result["identity"]
+    identity_type = result["identity_type"].capitalize()
+    privilege = result["privilege"]
+    scope = result.get("scope")
+
+    if scope:
+        # Scoped check — yes/no with role paths
+        if result["has_access"]:
+            lines.append(f"{identity_type} '{identity}' CAN '{privilege}' on {scope.upper()}")
+
+            # Show which roles provide the access
+            if result.get("account_wide"):
+                lines.append(f"\n  Via account-wide grant:")
+                for r in result.get("account_wide_roles", []):
+                    lines.append(f"    - {r}")
+
+            if result.get("databases"):
+                lines.append(f"\n  Via database grant:")
+                for d in result["databases"]:
+                    roles = ", ".join(d["via_roles"])
+                    lines.append(f"    - {d['name']} (via {roles})")
+
+            if result.get("schemas"):
+                lines.append(f"\n  Via schema grant:")
+                for s in result["schemas"]:
+                    roles = ", ".join(s["via_roles"])
+                    lines.append(f"    - {s['name']} (via {roles})")
+
+            # Show inheritance paths
+            if result.get("access_paths"):
+                lines.append(f"\n  Role inheritance paths:")
+                for i, path in enumerate(result["access_paths"], 1):
+                    lines.append(f"    Path {i}: {' -> '.join(path)}")
+
+        else:
+            lines.append(f"{identity_type} '{identity}' CANNOT '{privilege}' on {scope.upper()}")
+    else:
+        # Full scope breakdown (unscoped)
+        if not result["has_access"]:
+            lines.append(f"{identity_type} '{identity}' CANNOT '{privilege}' anywhere.")
+            return "\n".join(lines)
+
+        lines.append(f"{identity_type} '{identity}' CAN '{privilege}':")
+
+        if result["account_wide"]:
+            roles = ", ".join(result.get("account_wide_roles", []))
+            lines.append(f"\n  Account-wide: Yes (via {roles})")
+        else:
+            lines.append(f"\n  Account-wide: No")
+
+        if result["databases"]:
+            lines.append(f"\n  Databases ({len(result['databases'])}):")
+            for d in result["databases"]:
+                roles = ", ".join(d["via_roles"])
+                lines.append(f"    - {d['name']} (via {roles})")
+
+        if result["schemas"]:
+            lines.append(f"\n  Schemas ({len(result['schemas'])}):")
+            for s in result["schemas"][:50]:
+                roles = ", ".join(s["via_roles"])
+                lines.append(f"    - {s['name']} (via {roles})")
+            if len(result["schemas"]) > 50:
+                lines.append(f"    ... and {len(result['schemas']) - 50} more")
 
     return "\n".join(lines)
 
