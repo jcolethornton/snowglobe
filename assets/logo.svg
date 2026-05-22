@@ -1,6 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" width="720" height="180" role="img" aria-label="Snowglobe">
   <title>Snowglobe</title>
 
+  <style>
+    .wordmark { fill: #003660; }
+    .tagline  { fill: #1D292E; opacity: 0.78; }
+    @media (prefers-color-scheme: dark) {
+      .wordmark { fill: #FFFFFF; }
+      .tagline  { fill: #C1E0F4; opacity: 0.95; }
+    }
+  </style>
+
   <!-- Icon -->
   <g transform="translate(20, 10)">
     <!-- Base (stand) -->
@@ -51,12 +60,12 @@
   </g>
 
   <!-- Wordmark -->
-  <text x="200" y="105"
+  <text x="200" y="105" class="wordmark"
         font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-        font-size="64" font-weight="700" fill="#003660" letter-spacing="-1">Snowglobe</text>
+        font-size="64" font-weight="700" letter-spacing="-1">Snowglobe</text>
 
   <!-- Tagline -->
-  <text x="202" y="138"
+  <text x="202" y="138" class="tagline"
         font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-        font-size="16" font-weight="400" fill="#1D292E" opacity="0.78">Explainable cost and access visibility for Snowflake</text>
+        font-size="16" font-weight="400">Explainable cost and access visibility for Snowflake</text>
 </svg>
