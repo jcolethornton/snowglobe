@@ -881,6 +881,54 @@ def _cache_indicator(cache_age: int | None) -> str:
     return f" (cached {cache_age} min ago)"
 
 
+def _drill_down_prompt(items: list[str], label: str = "Drill down") -> str | None:
+    """
+    Show a numbered selection prompt after displaying results.
+    Returns the selected item string, or None if user skips.
+    """
+    import sys
+    if not sys.stdin.isatty() or not items:
+        return None
+
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import WordCompleter
+
+    typer.echo("")
+    choices = [str(i + 1) for i in range(len(items))] + ["q"]
+    session = PromptSession()
+    selection = session.prompt(
+        f"  {label} (1-{len(items)}, q to skip): ",
+        completer=WordCompleter(choices),
+    ).strip()
+
+    if not selection or selection.lower() == "q":
+        return None
+    try:
+        idx = int(selection) - 1
+        if 0 <= idx < len(items):
+            return items[idx]
+    except ValueError:
+        pass
+    return None
+
+
+def _display_daily_trend(df, title: str):
+    """Render a daily trend DataFrame as a sparkline table."""
+    if df.empty:
+        typer.echo("  No data for this selection.")
+        return
+    typer.echo("")
+    typer.secho(f"  {title}", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  {'DATE':<12} {'CREDITS':>10}  {'TREND'}")
+    typer.echo(f"  {'─' * 12} {'─' * 10}  {'─' * 20}")
+    max_credits = df["CREDITS"].max() if not df.empty else 1
+    for _, row in df.iterrows():
+        bar_len = int((row["CREDITS"] / max_credits) * 20) if max_credits > 0 else 0
+        bar = "▓" * bar_len
+        typer.echo(f"  {str(row['DATE']):<12} {row['CREDITS']:>10,.2f}  {bar}")
+    typer.echo("")
+
+
 def _cost_summary(cost_service, days: int, csv_path: str | None, refresh: bool):
     """Display account cost summary by service type."""
     typer.echo(f"\nFetching account summary (last {days} days)...")
@@ -896,11 +944,19 @@ def _cost_summary(cost_service, days: int, csv_path: str | None, refresh: bool):
     total = df["CREDITS"].sum()
     typer.secho(f"  Total: {total:,.2f} credits ({days} days){_cache_indicator(cache_age)}", fg=typer.colors.GREEN, bold=True)
     typer.echo("")
-    for _, row in df.iterrows():
+    for i, (_, row) in enumerate(df.iterrows(), 1):
         bar_len = int(row["PCT"] / 2)
         bar = "█" * bar_len
-        typer.echo(f"  {row['SERVICE_TYPE']:<40} {row['CREDITS']:>10,.2f}  {row['PCT']:>5.1f}%  {bar}")
+        typer.echo(f"  [{i:>2}] {row['SERVICE_TYPE']:<38} {row['CREDITS']:>10,.2f}  {row['PCT']:>5.1f}%  {bar}")
     typer.echo("")
+
+    # Drill-down
+    service_types = df["SERVICE_TYPE"].tolist()
+    selected = _drill_down_prompt(service_types, "View daily trend for service")
+    if selected:
+        typer.echo(f"\n  Fetching daily trend for {selected}...")
+        detail_df = cost_service.get_service_daily_trend(selected, days)
+        _display_daily_trend(detail_df, f"Daily Trend: {selected} ({days} days)")
 
 
 def _cost_warehouses(cost_service, days: int, csv_path: str | None, refresh: bool):
@@ -919,6 +975,15 @@ def _cost_warehouses(cost_service, days: int, csv_path: str | None, refresh: boo
         typer.secho(f"  {_cache_indicator(cache_age).strip()}", fg=typer.colors.BRIGHT_BLACK)
     cli.print_table(df, title=f"Warehouse Costs ({days} days)")
 
+    # Drill-down
+    if not df.empty and "WAREHOUSE_NAME" in df.columns:
+        warehouses = df["WAREHOUSE_NAME"].tolist()
+        selected = _drill_down_prompt(warehouses, "View daily trend for warehouse")
+        if selected:
+            typer.echo(f"\n  Fetching daily trend for {selected}...")
+            detail_df = cost_service.get_warehouse_daily_trend(selected, days)
+            _display_daily_trend(detail_df, f"Daily Trend: {selected} ({days} days)")
+
 
 def _cost_users(cost_service, days: int, csv_path: str | None, refresh: bool):
     """Display complete cost per user — warehouse + all AI services."""
@@ -935,6 +1000,18 @@ def _cost_users(cost_service, days: int, csv_path: str | None, refresh: bool):
     if cache_age is not None:
         typer.secho(f"  {_cache_indicator(cache_age).strip()}", fg=typer.colors.BRIGHT_BLACK)
     cli.print_table(df, title=f"User Cost Attribution ({days} days)")
+
+    # Drill-down
+    if not df.empty and "USER_NAME" in df.columns:
+        users = df["USER_NAME"].tolist()
+        selected = _drill_down_prompt(users, "View warehouse breakdown for user")
+        if selected:
+            typer.echo(f"\n  Fetching detail for {selected}...")
+            detail_df = cost_service.get_user_detail(selected, days)
+            if detail_df.empty:
+                typer.echo("  No query attribution data for this user.")
+            else:
+                cli.print_table(detail_df, title=f"Warehouse Breakdown: {selected} ({days} days)")
 
 
 def _cost_ai(cost_service, days: int, csv_path: str | None, refresh: bool):
