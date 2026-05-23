@@ -15,10 +15,10 @@ class AccessExplainer:
         **args
     ):
         self.resolver = resolver
-        self.object_type = args['object_type']
-        self.object_name = args['object_name']
-        self.privilege = args['privilege']
-        self.database = args['database']
+        self.object_type = args['object_type'].upper() if args.get('object_type') else None
+        self.object_name = args['object_name'].upper() if args.get('object_name') else None
+        self.privilege = args['privilege'].upper() if args.get('privilege') else None
+        self.database = args.get('database')
 
     def object_exists(self) -> bool:
 
