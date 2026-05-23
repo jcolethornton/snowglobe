@@ -1,9 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 @dataclass
 class QueryOptimizationResult:
     suggestions: List[str]
+    insights: List[dict] = field(default_factory=list)  # Snowflake-native QUERY_INSIGHTS
 
 @dataclass
 class ExpensiveOperator:
@@ -11,3 +12,4 @@ class ExpensiveOperator:
     operator_id: int
     score: float
     detail: dict
+    time_pct: float = 0.0  # overall_percentage from execution_time_breakdown
