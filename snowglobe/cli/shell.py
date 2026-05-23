@@ -263,6 +263,26 @@ def _cmd_whoaccess(ctx: SnowglobeContext, args: list):
             privilege=privilege,
         )
         typer.echo(cli.format_reverse_text(result))
+
+        # Drill-down: select a role to see its full grants
+        privileges_result = result.get("privileges", {})
+        if privileges_result:
+            all_roles = set()
+            for priv_info in privileges_result.values():
+                all_roles.update(priv_info.get("direct_roles", []))
+            all_roles = sorted(all_roles)
+            if all_roles:
+                selected = _drill_down_prompt(all_roles, "Inspect role's grants")
+                if selected:
+                    typer.echo(f"\n  Fetching grants for {selected}...")
+                    grant_rows = access_service.db.query_grants_by_grantees({selected})
+                    if grant_rows:
+                        import pandas as pd_local
+                        grant_df = pd_local.DataFrame(grant_rows)[["privilege", "granted_on", "fqn"]]
+                        grant_df.columns = ["PRIVILEGE", "OBJECT_TYPE", "OBJECT"]
+                        cli.print_table(grant_df, title=f"Grants for {selected}")
+                    else:
+                        typer.echo(f"  No grants found for {selected}.")
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
