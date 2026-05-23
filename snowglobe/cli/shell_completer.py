@@ -1,6 +1,7 @@
 from prompt_toolkit.completion import Completer, Completion
 
 SHELL_COMMANDS = ["check", "roles", "members", "path", "escalation", "scan", "use", "set", "access", "whoaccess", "create", "cost", "optimize", "refresh", "status", "debug", "help", "exit", "?"]
+COST_SUBCOMMANDS = ["summary", "warehouses", "users", "ai", "ai-users", "services", "queries", "trend", "storage", "budget", "replication", "mv"]
 SET_FIELDS = ["object_type", "object_name", "privilege"]
 
 
@@ -56,6 +57,15 @@ class SnowglobeCompleter(Completer):
         if command == "escalation":
             if (len(parts) == 1 and new_word) or (len(parts) == 2 and not new_word):
                 yield from self._complete_roles(start_position, word if not new_word else None)
+                return
+
+        # ---- cost command (expects a subcommand) ----
+        if command == "cost":
+            if (len(parts) == 1 and new_word) or (len(parts) == 2 and not new_word):
+                prefix = word if not new_word else None
+                for sub in COST_SUBCOMMANDS:
+                    if prefix is None or sub.startswith(prefix):
+                        yield Completion(sub, start_position=start_position)
                 return
 
         # ---- use command ----

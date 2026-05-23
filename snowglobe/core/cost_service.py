@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 from snowglobe.state.db import StateDB
 
 CACHE_TTL_SECONDS = 3600  # 1 hour
+DEFAULT_STORAGE_RATE_PER_TB = 23.0  # On-demand standard rate $/TB/month
 
 
 class CostService:
@@ -20,6 +21,7 @@ class CostService:
         self.context = context
         self.context.load_profile()
         self.db = StateDB()
+        self._storage_rate: float | None = None
 
     def _is_fresh(self, cache_key: str) -> bool:
         """Check if a cache entry exists and is less than 1 hour old."""
@@ -38,6 +40,50 @@ class CostService:
     def _mark_cached(self, cache_key: str):
         """Record the current timestamp for a cache key."""
         self.db.set_metadata(cache_key, datetime.now(timezone.utc).isoformat())
+
+    def get_storage_rate(self) -> float:
+        """
+        Get the effective storage rate ($/TB/month) from ORGANIZATION_USAGE.RATE_SHEET_DAILY.
+        Falls back to DEFAULT_STORAGE_RATE_PER_TB if org-level view is unavailable.
+        Result is cached for the session.
+        """
+        if self._storage_rate is not None:
+            return self._storage_rate
+
+        # Check if we have a cached rate in metadata (refreshed daily)
+        cached_rate = self.db.get_metadata("storage_rate_per_tb")
+        if cached_rate:
+            cache_age = self.db.get_cost_cache_age("storage_rate_fetched_at")
+            if cache_age is not None and cache_age < 86400:  # 24 hours
+                self._storage_rate = float(cached_rate)
+                return self._storage_rate
+
+        # Try to fetch from ORGANIZATION_USAGE (requires ORGADMIN or appropriate grants)
+        sql = """
+        SELECT EFFECTIVE_RATE
+        FROM SNOWFLAKE.ORGANIZATION_USAGE.RATE_SHEET_DAILY
+        WHERE RATING_TYPE = 'storage'
+          AND SERVICE_TYPE = 'storage'
+          AND BILLING_TYPE = 'consumption'
+          AND IS_ADJUSTMENT = FALSE
+        ORDER BY DATE DESC
+        LIMIT 1
+        """
+        conn = self.context.connect()
+        try:
+            with conn:
+                rows = conn.query(sql)
+            if rows:
+                rate = float(rows[0]["EFFECTIVE_RATE"])
+                self._storage_rate = rate
+                self.db.set_metadata("storage_rate_per_tb", str(rate))
+                self.db.set_metadata("storage_rate_fetched_at", datetime.now(timezone.utc).isoformat())
+                return rate
+        except Exception:
+            pass  # View unavailable — use default
+
+        self._storage_rate = DEFAULT_STORAGE_RATE_PER_TB
+        return self._storage_rate
 
     def get_account_summary(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
         """
@@ -219,10 +265,10 @@ class CostService:
         cache_key = f"cost_ai_{days}d_fetched_at"
 
         if not refresh and self._is_fresh(cache_key):
-            # AI costs aren't stored in a dedicated snapshot table, so no cache read
-            pass  # Fall through to Snowflake query
-        else:
-            pass
+            cached = self.db.get_json_cache(f"cost_ai_{days}d_data")
+            if cached:
+                df = pd.DataFrame(cached)
+                return df, self._cache_age_minutes(cache_key)
 
         sql = f"""
         SELECT service AS SERVICE,
@@ -269,6 +315,7 @@ class CostService:
             df["TOTAL_CREDITS"] = df["TOTAL_CREDITS"].astype(float)
             total = df["TOTAL_CREDITS"].sum()
             df["PCT"] = (df["TOTAL_CREDITS"] / total * 100).round(1)
+            self.db.set_json_cache(f"cost_ai_{days}d_data", df.to_dict("records"))
             self._mark_cached(cache_key)
         return df, None
 
@@ -279,9 +326,12 @@ class CostService:
         """
         cache_key = f"cost_ai_users_{days}d_fetched_at"
 
-        # No dedicated cache table for ai-users — always query (but mark to avoid re-query)
+        # No dedicated cache table for ai-users — use JSON cache
         if not refresh and self._is_fresh(cache_key):
-            pass  # Fall through — no cache storage for this view yet
+            cached = self.db.get_json_cache(f"cost_ai_users_{days}d_data")
+            if cached:
+                df = pd.DataFrame(cached)
+                return df, self._cache_age_minutes(cache_key)
 
         sql = f"""
         WITH cte AS (
@@ -333,6 +383,7 @@ class CostService:
             rows = conn.query(sql)
         df = pd.DataFrame(rows)
         if not df.empty:
+            self.db.set_json_cache(f"cost_ai_users_{days}d_data", df.to_dict("records"))
             self._mark_cached(cache_key)
         return df, None
 
@@ -343,9 +394,11 @@ class CostService:
         """
         cache_key = f"cost_services_{days}d_fetched_at"
 
-        # No dedicated cache table — always query
         if not refresh and self._is_fresh(cache_key):
-            pass  # Fall through
+            cached = self.db.get_json_cache(f"cost_services_{days}d_data")
+            if cached:
+                df = pd.DataFrame(cached)
+                return df, self._cache_age_minutes(cache_key)
 
         sql = f"""
         WITH pipe_costs AS (
@@ -400,6 +453,7 @@ class CostService:
             rows = conn.query(sql)
         df = pd.DataFrame(rows)
         if not df.empty:
+            self.db.set_json_cache(f"cost_services_{days}d_data", df.to_dict("records"))
             self._mark_cached(cache_key)
         return df, None
 
@@ -429,3 +483,236 @@ class CostService:
         with conn:
             rows = conn.query(sql)
         return pd.DataFrame(rows), None
+
+    # --- Daily trend ---
+
+    def get_daily_trend(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+        """
+        Daily credit spend with day-over-day delta and 7-day rolling average.
+        Uses METERING_DAILY_HISTORY for per-day granularity.
+        Returns (df, cache_age_minutes).
+        """
+        cache_key = f"cost_trend_{days}d_fetched_at"
+
+        if not refresh and self._is_fresh(cache_key):
+            cached = self.db.get_cost_trend_cache(days)
+            if cached:
+                df = pd.DataFrame(cached)
+                df["total_credits"] = df["total_credits"].astype(float)
+                # Compute delta_pct from cached data
+                df["delta_pct"] = df["total_credits"].pct_change() * 100
+                df = df.rename(columns={
+                    "snapshot_date": "DATE",
+                    "total_credits": "CREDITS",
+                    "rolling_7d_avg": "ROLLING_7D_AVG",
+                    "delta_pct": "DELTA_PCT",
+                })
+                return df, self._cache_age_minutes(cache_key)
+
+        sql = f"""
+        SELECT USAGE_DATE AS dt,
+               ROUND(SUM(CREDITS_BILLED), 2) AS total_credits
+        FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
+        WHERE USAGE_DATE >= DATEADD(day, -{days}, CURRENT_DATE())
+        GROUP BY 1
+        ORDER BY 1
+        """
+        conn = self.context.connect()
+        with conn:
+            rows = conn.query(sql)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df.columns = ["DATE", "CREDITS"]
+            df["CREDITS"] = df["CREDITS"].astype(float)
+            df["ROLLING_7D_AVG"] = df["CREDITS"].rolling(window=7, min_periods=1).mean().round(2)
+            df["DELTA_PCT"] = (df["CREDITS"].pct_change() * 100).round(1)
+            # Save to cache
+            cache_rows = [
+                {"snapshot_date": str(row["DATE"]), "total_credits": row["CREDITS"], "rolling_7d_avg": row["ROLLING_7D_AVG"]}
+                for _, row in df.iterrows()
+            ]
+            self.db.save_cost_trend_snapshot(cache_rows)
+            self._mark_cached(cache_key)
+        return df, None
+
+    # --- Storage usage ---
+
+    def get_storage_usage(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+        """
+        Storage breakdown per database (active + failsafe + time travel) plus stage storage.
+        Uses DATABASE_STORAGE_USAGE_HISTORY and STAGE_STORAGE_USAGE_HISTORY.
+        Returns storage in TB with estimated monthly cost using the org's contracted rate
+        (from RATE_SHEET_DAILY) or $23/TB on-demand default.
+        """
+        cache_key = f"cost_storage_{days}d_fetched_at"
+
+        if not refresh and self._is_fresh(cache_key):
+            cached = self.db.get_cost_storage_cache()
+            if cached:
+                df = pd.DataFrame(cached)
+                df["TOTAL_BYTES"] = df["ACTIVE_BYTES"] + df["FAILSAFE_BYTES"] + df["STAGE_BYTES"]
+                df["TOTAL_TB"] = (df["TOTAL_BYTES"] / 1e12).round(4)
+                rate = self.get_storage_rate()
+                df["EST_MONTHLY_COST"] = (df["TOTAL_TB"] * rate).round(2)
+                df = df.sort_values("TOTAL_BYTES", ascending=False).reset_index(drop=True)
+                return df, self._cache_age_minutes(cache_key)
+
+        sql = f"""
+        WITH db_storage AS (
+            SELECT DATABASE_NAME,
+                   AVG(AVERAGE_DATABASE_BYTES) AS active_bytes,
+                   AVG(AVERAGE_FAILSAFE_BYTES) AS failsafe_bytes
+            FROM SNOWFLAKE.ACCOUNT_USAGE.DATABASE_STORAGE_USAGE_HISTORY
+            WHERE USAGE_DATE >= DATEADD(day, -{days}, CURRENT_DATE())
+            GROUP BY 1
+        ),
+        stage_storage AS (
+            SELECT AVG(AVERAGE_STAGE_BYTES) AS stage_bytes
+            FROM SNOWFLAKE.ACCOUNT_USAGE.STAGE_STORAGE_USAGE_HISTORY
+            WHERE USAGE_DATE >= DATEADD(day, -{days}, CURRENT_DATE())
+        )
+        SELECT d.DATABASE_NAME,
+               ROUND(d.active_bytes, 0) AS ACTIVE_BYTES,
+               ROUND(d.failsafe_bytes, 0) AS FAILSAFE_BYTES,
+               0 AS STAGE_BYTES
+        FROM db_storage d
+        UNION ALL
+        SELECT '(Internal Stages)' AS DATABASE_NAME,
+               0 AS ACTIVE_BYTES,
+               0 AS FAILSAFE_BYTES,
+               ROUND(s.stage_bytes, 0) AS STAGE_BYTES
+        FROM stage_storage s
+        WHERE s.stage_bytes > 0
+        ORDER BY ACTIVE_BYTES DESC
+        """
+        conn = self.context.connect()
+        with conn:
+            rows = conn.query(sql)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["ACTIVE_BYTES"] = df["ACTIVE_BYTES"].astype(float)
+            df["FAILSAFE_BYTES"] = df["FAILSAFE_BYTES"].astype(float)
+            df["STAGE_BYTES"] = df["STAGE_BYTES"].astype(float)
+            df["TOTAL_BYTES"] = df["ACTIVE_BYTES"] + df["FAILSAFE_BYTES"] + df["STAGE_BYTES"]
+            df["TOTAL_TB"] = (df["TOTAL_BYTES"] / 1e12).round(4)
+            rate = self.get_storage_rate()
+            df["EST_MONTHLY_COST"] = (df["TOTAL_TB"] * rate).round(2)
+            # Cache
+            today = date.today().isoformat()
+            self.db.save_cost_storage_snapshot(today, df.to_dict("records"))
+            self._mark_cached(cache_key)
+        return df, None
+
+    # --- Budget status (Snowflake-native budgets) ---
+
+    def get_budget_status(self) -> tuple[pd.DataFrame, str | None]:
+        """
+        Surface Snowflake-native budget status.
+        Calls the account root budget spending history and lists custom budgets.
+        Returns (df, error_message) — error_message is set if budgets are not activated.
+        """
+        conn = self.context.connect()
+        try:
+            with conn:
+                # Get spending history from account budget
+                rows = conn.query("""
+                    SELECT *
+                    FROM TABLE(SNOWFLAKE.LOCAL.ACCOUNT_ROOT_BUDGET!GET_SPENDING_HISTORY())
+                """)
+            df = pd.DataFrame(rows)
+            return df, None
+        except Exception as e:
+            err_msg = str(e)
+            if "not activated" in err_msg.lower() or "does not exist" in err_msg.lower():
+                return pd.DataFrame(), "Budgets are not activated on this account. Use Snowsight or CALL SNOWFLAKE.LOCAL.ACCOUNT_ROOT_BUDGET!ACTIVATE() to enable."
+            return pd.DataFrame(), f"Could not retrieve budget status: {err_msg}"
+
+    # --- Replication costs ---
+
+    def get_replication_costs(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+        """
+        Replication credit costs from REPLICATION_GROUP_USAGE_HISTORY.
+        Falls back to METERING_DAILY_HISTORY filtered by REPLICATION service type.
+        """
+        cache_key = f"cost_replication_{days}d_fetched_at"
+
+        if not refresh and self._is_fresh(cache_key):
+            cached = self.db.get_json_cache(f"cost_replication_{days}d_data")
+            if cached:
+                df = pd.DataFrame(cached)
+                return df, self._cache_age_minutes(cache_key)
+
+        # Try detailed replication view first
+        sql = f"""
+        SELECT REPLICATION_GROUP_NAME,
+               ROUND(SUM(CREDITS_USED), 2) AS CREDITS,
+               ROUND(SUM(BYTES_TRANSFERRED) / 1e9, 2) AS GB_TRANSFERRED
+        FROM SNOWFLAKE.ACCOUNT_USAGE.REPLICATION_GROUP_USAGE_HISTORY
+        WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+        GROUP BY 1
+        ORDER BY 2 DESC
+        """
+        conn = self.context.connect()
+        try:
+            with conn:
+                rows = conn.query(sql)
+            df = pd.DataFrame(rows)
+            if not df.empty:
+                self.db.set_json_cache(f"cost_replication_{days}d_data", df.to_dict("records"))
+                self._mark_cached(cache_key)
+            return df, None
+        except Exception:
+            # Fallback: use metering daily history
+            sql_fallback = f"""
+            SELECT USAGE_DATE AS DATE,
+                   ROUND(SUM(CREDITS_BILLED), 2) AS CREDITS
+            FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
+            WHERE SERVICE_TYPE = 'REPLICATION'
+              AND USAGE_DATE >= DATEADD(day, -{days}, CURRENT_DATE())
+            GROUP BY 1
+            ORDER BY 1
+            """
+            conn2 = self.context.connect()
+            with conn2:
+                rows = conn2.query(sql_fallback)
+            df = pd.DataFrame(rows)
+            if not df.empty:
+                self.db.set_json_cache(f"cost_replication_{days}d_data", df.to_dict("records"))
+                self._mark_cached(cache_key)
+            return df, None
+
+    # --- Materialized view costs ---
+
+    def get_materialized_view_costs(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+        """
+        Per-materialized-view refresh costs from MATERIALIZED_VIEW_REFRESH_HISTORY.
+        """
+        cache_key = f"cost_mv_{days}d_fetched_at"
+
+        if not refresh and self._is_fresh(cache_key):
+            cached = self.db.get_json_cache(f"cost_mv_{days}d_data")
+            if cached:
+                df = pd.DataFrame(cached)
+                return df, self._cache_age_minutes(cache_key)
+
+        sql = f"""
+        SELECT DATABASE_NAME || '.' || SCHEMA_NAME || '.' || TABLE_NAME AS MV_NAME,
+               ROUND(SUM(CREDITS_USED), 2) AS CREDITS,
+               COUNT(*) AS REFRESH_COUNT
+        FROM SNOWFLAKE.ACCOUNT_USAGE.MATERIALIZED_VIEW_REFRESH_HISTORY
+        WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+        GROUP BY 1
+        ORDER BY 2 DESC
+        """
+        conn = self.context.connect()
+        try:
+            with conn:
+                rows = conn.query(sql)
+            df = pd.DataFrame(rows)
+            if not df.empty:
+                self.db.set_json_cache(f"cost_mv_{days}d_data", df.to_dict("records"))
+                self._mark_cached(cache_key)
+            return df, None
+        except Exception:
+            # View may not exist if no MVs are used
+            return pd.DataFrame(), None

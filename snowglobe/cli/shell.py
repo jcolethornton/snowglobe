@@ -1,4 +1,5 @@
 import typer
+import pandas as pd
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import FuzzyCompleter
 from snowglobe.cli.shell_completer import SnowglobeCompleter
@@ -772,26 +773,41 @@ def _cmd_cost(ctx: SnowglobeContext, args: list):
             _cost_services(cost_service, days, csv_path, refresh)
         elif sub == "queries":
             _cost_queries(cost_service, min(days, 7), csv_path, refresh)
+        elif sub == "trend":
+            _cost_trend(cost_service, days, csv_path, refresh)
+        elif sub == "storage":
+            _cost_storage(cost_service, days, csv_path, refresh)
+        elif sub == "budget":
+            _cost_budget(cost_service, csv_path)
+        elif sub == "replication":
+            _cost_replication(cost_service, days, csv_path, refresh)
+        elif sub in ("materialized-views", "mv"):
+            _cost_materialized_views(cost_service, days, csv_path, refresh)
         else:
-            typer.secho(f"Unknown subcommand: {sub}. Use: summary, warehouses, users, ai, ai-users, services, queries", fg=typer.colors.YELLOW)
+            typer.secho(f"Unknown subcommand: {sub}. Use: summary, warehouses, users, ai, ai-users, services, queries, trend, storage, budget, replication, mv", fg=typer.colors.YELLOW)
         return
 
     # Interactive wizard
     typer.echo("")
     typer.secho("Cost Analysis", fg=typer.colors.CYAN, bold=True)
-    typer.echo("  [1] Account summary — total spend by service type")
-    typer.echo("  [2] Warehouse breakdown — cost per warehouse")
-    typer.echo("  [3] User breakdown — all costs per user (warehouse + AI)")
-    typer.echo("  [4] AI services — token costs by service type")
-    typer.echo("  [5] AI by user — token costs per user per service")
-    typer.echo("  [6] Services breakdown — pipes, tasks, SPCS, clustering")
-    typer.echo("  [7] Top expensive queries")
+    typer.echo("  [1]  Account summary — total spend by service type")
+    typer.echo("  [2]  Warehouse breakdown — cost per warehouse")
+    typer.echo("  [3]  User breakdown — all costs per user (warehouse + AI)")
+    typer.echo("  [4]  AI services — token costs by service type")
+    typer.echo("  [5]  AI by user — token costs per user per service")
+    typer.echo("  [6]  Services breakdown — pipes, tasks, SPCS, clustering")
+    typer.echo("  [7]  Top expensive queries")
+    typer.echo("  [8]  Daily trend — day-over-day spend with rolling average")
+    typer.echo("  [9]  Storage — per-database storage breakdown")
+    typer.echo("  [10] Budget — Snowflake budget status & projected spend")
+    typer.echo("  [11] Replication — cross-region replication costs")
+    typer.echo("  [12] Materialized views — MV refresh costs")
     typer.echo("")
 
     session = PromptSession()
     choice = session.prompt(
-        "Choice (1-7): ",
-        completer=WordCompleter(["1", "2", "3", "4", "5", "6", "7"]),
+        "Choice (1-12): ",
+        completer=WordCompleter(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]),
     ).strip()
 
     if choice == "1":
@@ -808,6 +824,16 @@ def _cmd_cost(ctx: SnowglobeContext, args: list):
         _cost_services(cost_service, 30, None, False)
     elif choice == "7":
         _cost_queries(cost_service, 7, None, False)
+    elif choice == "8":
+        _cost_trend(cost_service, 30, None, False)
+    elif choice == "9":
+        _cost_storage(cost_service, 30, None, False)
+    elif choice == "10":
+        _cost_budget(cost_service, None)
+    elif choice == "11":
+        _cost_replication(cost_service, 30, None, False)
+    elif choice == "12":
+        _cost_materialized_views(cost_service, 30, None, False)
     else:
         typer.secho("Invalid choice.", fg=typer.colors.YELLOW)
 
@@ -959,6 +985,119 @@ def _cost_queries(cost_service, days: int, csv_path: str | None, refresh: bool):
     cli.print_table(df, title=f"Top Expensive Queries ({days} days)")
 
 
+def _cost_trend(cost_service, days: int, csv_path: str | None, refresh: bool):
+    """Display daily cost trend with day-over-day change and rolling 7-day average."""
+    typer.echo(f"\nFetching daily trend (last {days} days)...")
+    df, cache_age = cost_service.get_daily_trend(days, refresh=refresh)
+    if df.empty:
+        typer.echo("  No trend data found.")
+        return
+
+    if _export_csv(df, csv_path):
+        return
+
+    typer.echo("")
+    total = df["CREDITS"].sum()
+    avg_daily = df["CREDITS"].mean()
+    typer.secho(f"  Total: {total:,.2f} credits | Avg daily: {avg_daily:,.2f}{_cache_indicator(cache_age)}", fg=typer.colors.GREEN, bold=True)
+    typer.echo("")
+
+    # Sparkline-style table showing date, credits, delta, and rolling avg
+    typer.echo(f"  {'DATE':<12} {'CREDITS':>10} {'DELTA %':>9} {'7D AVG':>10}  {'TREND'}")
+    typer.echo(f"  {'─' * 12} {'─' * 10} {'─' * 9} {'─' * 10}  {'─' * 20}")
+    max_credits = df["CREDITS"].max() if not df.empty else 1
+    for _, row in df.iterrows():
+        bar_len = int((row["CREDITS"] / max_credits) * 20) if max_credits > 0 else 0
+        bar = "▓" * bar_len
+        delta_str = f"{row['DELTA_PCT']:+.1f}%" if pd.notna(row["DELTA_PCT"]) else "    —"
+        avg_str = f"{row['ROLLING_7D_AVG']:,.2f}" if pd.notna(row["ROLLING_7D_AVG"]) else "—"
+        typer.echo(f"  {str(row['DATE']):<12} {row['CREDITS']:>10,.2f} {delta_str:>9} {avg_str:>10}  {bar}")
+    typer.echo("")
+
+
+def _cost_storage(cost_service, days: int, csv_path: str | None, refresh: bool):
+    """Display per-database storage breakdown with estimated monthly cost."""
+    typer.echo(f"\nFetching storage usage (avg over last {days} days)...")
+    df, cache_age = cost_service.get_storage_usage(days, refresh=refresh)
+    if df.empty:
+        typer.echo("  No storage data found.")
+        return
+
+    if _export_csv(df, csv_path):
+        return
+
+    typer.echo("")
+    total_tb = df["TOTAL_TB"].sum()
+    total_cost = df["EST_MONTHLY_COST"].sum()
+    rate = cost_service.get_storage_rate()
+    typer.secho(f"  Total storage: {total_tb:,.4f} TB | Est. monthly: ${total_cost:,.2f}{_cache_indicator(cache_age)}", fg=typer.colors.GREEN, bold=True)
+    rate_source = "contracted rate" if rate != 23.0 else "on-demand default"
+    typer.echo(f"  (Estimated at ${rate:.2f}/TB/month — {rate_source})")
+    typer.echo("")
+
+    # Display table with human-readable sizes
+    display_df = df[["DATABASE_NAME", "TOTAL_TB", "EST_MONTHLY_COST"]].copy()
+    display_df = display_df[display_df["TOTAL_TB"] > 0]
+    if not display_df.empty:
+        cli.print_table(display_df, title=f"Storage by Database ({days}-day avg)")
+
+
+def _cost_budget(cost_service, csv_path: str | None):
+    """Display Snowflake native budget status."""
+    typer.echo("\nFetching budget status...")
+    df, error = cost_service.get_budget_status()
+    if error:
+        typer.secho(f"  {error}", fg=typer.colors.YELLOW)
+        return
+
+    if df.empty:
+        typer.echo("  No budget spending history found.")
+        return
+
+    if _export_csv(df, csv_path):
+        return
+
+    typer.echo("")
+    typer.secho("  Snowflake Budget — Spending History", fg=typer.colors.CYAN, bold=True)
+    typer.echo("")
+    cli.print_table(df, title="Budget Spending History")
+
+
+def _cost_replication(cost_service, days: int, csv_path: str | None, refresh: bool):
+    """Display replication costs by group or daily."""
+    typer.echo(f"\nFetching replication costs (last {days} days)...")
+    df, cache_age = cost_service.get_replication_costs(days, refresh=refresh)
+    if df.empty:
+        typer.echo("  No replication cost data found.")
+        return
+
+    if _export_csv(df, csv_path):
+        return
+
+    typer.echo("")
+    if cache_age is not None:
+        typer.secho(f"  {_cache_indicator(cache_age).strip()}", fg=typer.colors.BRIGHT_BLACK)
+    cli.print_table(df, title=f"Replication Costs ({days} days)")
+
+
+def _cost_materialized_views(cost_service, days: int, csv_path: str | None, refresh: bool):
+    """Display materialized view refresh costs."""
+    typer.echo(f"\nFetching materialized view costs (last {days} days)...")
+    df, cache_age = cost_service.get_materialized_view_costs(days, refresh=refresh)
+    if df.empty:
+        typer.echo("  No materialized view cost data found.")
+        return
+
+    if _export_csv(df, csv_path):
+        return
+
+    typer.echo("")
+    total = df["CREDITS"].sum() if "CREDITS" in df.columns else 0
+    typer.secho(f"  Total MV refresh credits: {total:,.2f}{_cache_indicator(cache_age)}", fg=typer.colors.GREEN, bold=True)
+    typer.echo("")
+    cli.print_table(df, title=f"Materialized View Costs ({days} days)")
+
+
 def _cmd_optimize(ctx: SnowglobeContext, args: list):
     """Analyze a query by ID."""
     if not args:
@@ -970,6 +1109,12 @@ def _cmd_optimize(ctx: SnowglobeContext, args: list):
     optimizer_service.collect_query_profile(query_id)
     optimizer_service.analyze_query()
 
+    # Snowflake-native insights first
+    insights = optimizer_service.collect_insights()
+    if insights:
+        typer.echo(cli.format_query_insights(query_id, insights))
+
+    # Local rule-based suggestions
     opt_suggestions = optimizer_service.suggestions()
     typer.echo(cli.format_optimizer_suggestions(query_id, opt_suggestions.suggestions))
 
@@ -1054,12 +1199,17 @@ def _cmd_help(ctx: SnowglobeContext, args: list):
     typer.echo("  path <from> <to>   Does one role inherit from another?")
     typer.echo("  escalation <role>  Can this role reach admin privileges?")
     typer.echo("  scan               Bulk scan: find all escalation risks")
-    typer.echo("  cost               Cost analysis wizard (summary, warehouses, users, ai, queries)")
+    typer.echo("  cost               Cost analysis wizard")
     typer.echo("  cost summary       Account spend by service type")
     typer.echo("  cost warehouses    Cost per warehouse")
     typer.echo("  cost users         Cost per user")
-    typer.echo("  cost ai            AI token costs by model")
+    typer.echo("  cost ai            AI token costs by service")
     typer.echo("  cost queries       Top expensive queries")
+    typer.echo("  cost trend         Daily spend trend with rolling avg")
+    typer.echo("  cost storage       Per-database storage breakdown")
+    typer.echo("  cost budget        Snowflake budget status")
+    typer.echo("  cost replication   Replication costs by group")
+    typer.echo("  cost mv            Materialized view refresh costs")
     typer.echo("  optimize <id>      Analyze a specific query")
     typer.echo("  refresh            Refresh cached state from Snowflake")
     typer.echo("  status             Show current working state")
