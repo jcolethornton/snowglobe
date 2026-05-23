@@ -535,6 +535,64 @@ class CostService:
             self._mark_cached(cache_key)
         return df, None
 
+    # --- Drill-down detail methods ---
+
+    def get_service_daily_trend(self, service_type: str, days: int = 30) -> pd.DataFrame:
+        """Daily credits for a specific service type."""
+        sql = f"""
+        SELECT USAGE_DATE AS DATE,
+               ROUND(SUM(CREDITS_BILLED), 2) AS CREDITS
+        FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
+        WHERE SERVICE_TYPE = '{service_type}'
+          AND USAGE_DATE >= DATEADD(day, -{days}, CURRENT_DATE())
+        GROUP BY 1
+        ORDER BY 1
+        """
+        conn = self.context.connect()
+        with conn:
+            rows = conn.query(sql)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["CREDITS"] = df["CREDITS"].astype(float)
+        return df
+
+    def get_warehouse_daily_trend(self, warehouse_name: str, days: int = 30) -> pd.DataFrame:
+        """Daily credits for a specific warehouse."""
+        sql = f"""
+        SELECT DATE_TRUNC('day', START_TIME)::DATE AS DATE,
+               ROUND(SUM(CREDITS_USED), 2) AS CREDITS
+        FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+        WHERE WAREHOUSE_NAME = '{warehouse_name}'
+          AND START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+        GROUP BY 1
+        ORDER BY 1
+        """
+        conn = self.context.connect()
+        with conn:
+            rows = conn.query(sql)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["CREDITS"] = df["CREDITS"].astype(float)
+        return df
+
+    def get_user_detail(self, user_name: str, days: int = 7) -> pd.DataFrame:
+        """Per-warehouse credit breakdown for a specific user."""
+        sql = f"""
+        SELECT WAREHOUSE_NAME,
+               ROUND(SUM(CREDITS_ATTRIBUTED_COMPUTE), 4) AS CREDITS,
+               COUNT(*) AS QUERY_COUNT,
+               ROUND(AVG(CREDITS_ATTRIBUTED_COMPUTE), 6) AS AVG_CREDIT_PER_QUERY
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY
+        WHERE USER_NAME = '{user_name}'
+          AND START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+        GROUP BY 1
+        ORDER BY 2 DESC
+        """
+        conn = self.context.connect()
+        with conn:
+            rows = conn.query(sql)
+        return pd.DataFrame(rows)
+
     # --- Storage usage ---
 
     def get_storage_usage(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
