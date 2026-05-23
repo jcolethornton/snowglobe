@@ -114,7 +114,7 @@ class AccessResolver:
 
         effective_roles = {role} | self.role_graph.all_ancestors(role)
         for inherited_role in effective_roles:
-            for grant in self._grants_by_role.get(role, []):
+            for grant in self._grants_by_role.get(inherited_role, []):
 
                 chains = self.role_graph.all_paths(role, inherited_role)
 
