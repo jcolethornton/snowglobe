@@ -2,6 +2,7 @@ __all__ = [
     "format_json",
     "print_table",
     "format_access_text",
+    "format_query_insights",
 ]
 import pandas as pd
 
@@ -16,8 +17,15 @@ def print_table(df: pd.DataFrame, title=None, no_wrap=True):
     console = Console()
     table = Table(title=title or "", header_style="bold cyan", row_styles=["none", "dim"])
 
+    # Columns that should never be truncated
+    id_columns = {"QUERY_ID", "MV_NAME", "REPLICATION_GROUP_NAME"}
+
     for col in df.columns:
-        table.add_column(str(col), no_wrap=no_wrap, max_width=None if not no_wrap else 80)
+        col_str = str(col)
+        if col_str.upper() in id_columns:
+            table.add_column(col_str, no_wrap=True, overflow="fold")
+        else:
+            table.add_column(col_str, no_wrap=no_wrap, max_width=80 if no_wrap else None)
 
     for row in df.itertuples(index=False):
         formatted_row = [
@@ -242,10 +250,11 @@ def format_expensive_operators(expensive):
 
         scan = op.detail["scan_mb"]
         rows = op.detail["rows_m"]
+        time_str = f" time={op.time_pct:.0f}%" if op.time_pct > 0 else ""
 
         output += (
             f"{i}. {op.operator_type} (id={op.operator_id}) "
-            f"[scan={scan:.1f}MB rows={rows:.1f}M]\n"
+            f"[scan={scan:.1f}MB rows={rows:.1f}M{time_str}]\n"
         )
 
     return output
@@ -259,4 +268,42 @@ def format_cost_attribution(results):
 
         output += f"{r['operator_type']:<18} {r['percent']:.1f}%\n"
 
+    return output
+
+
+def format_query_insights(query_id, insights):
+    """Format Snowflake-native query insights for display."""
+    output = f"\nSnowflake Query Insights for '{query_id}'\n"
+    output += "=" * 50 + "\n"
+
+    if not insights:
+        output += "  No insights available (may take up to 90 min after execution).\n"
+        return output
+
+    for insight in insights:
+        topic = insight.get("topic", "UNKNOWN")
+        type_id = insight.get("type_id", "")
+        is_opp = insight.get("is_opportunity", False)
+        marker = "!" if is_opp else "i"
+
+        output += f"\n  [{marker}] {topic}: {type_id}\n"
+
+        # Message is VARIANT — may be a dict or string
+        message = insight.get("message")
+        if isinstance(message, dict):
+            msg_text = message.get("message", str(message))
+        elif isinstance(message, str):
+            msg_text = message
+        else:
+            msg_text = str(message) if message else ""
+        if msg_text:
+            output += f"      {msg_text}\n"
+
+        # Suggestions is an ARRAY of strings
+        suggestions = insight.get("suggestions")
+        if suggestions:
+            for s in suggestions:
+                output += f"      -> {s}\n"
+
+    output += "\n"
     return output
