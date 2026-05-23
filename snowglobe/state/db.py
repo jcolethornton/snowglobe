@@ -70,6 +70,22 @@ CREATE TABLE IF NOT EXISTS cost_user_snapshots (
     PRIMARY KEY (snapshot_date, user_name)
 );
 
+CREATE TABLE IF NOT EXISTS cost_trend_snapshots (
+    snapshot_date TEXT NOT NULL,
+    total_credits REAL NOT NULL,
+    rolling_7d_avg REAL,
+    PRIMARY KEY (snapshot_date)
+);
+
+CREATE TABLE IF NOT EXISTS cost_storage_snapshots (
+    snapshot_date TEXT NOT NULL,
+    database_name TEXT NOT NULL,
+    active_bytes REAL DEFAULT 0,
+    failsafe_bytes REAL DEFAULT 0,
+    stage_bytes REAL DEFAULT 0,
+    PRIMARY KEY (snapshot_date, database_name)
+);
+
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -128,6 +144,19 @@ class StateDB:
             (key, value),
         )
         self.conn.commit()
+
+    def get_json_cache(self, key: str) -> Optional[list[dict]]:
+        """Retrieve a JSON-serialized list of dicts from metadata."""
+        import json
+        raw = self.get_metadata(key)
+        if not raw:
+            return None
+        return json.loads(raw)
+
+    def set_json_cache(self, key: str, data: list[dict]):
+        """Store a list of dicts as JSON in metadata."""
+        import json
+        self.set_metadata(key, json.dumps(data))
 
     def get_refreshed_at(self) -> Optional[str]:
         return self.get_metadata("refreshed_at")
@@ -460,6 +489,65 @@ class StateDB:
                       cortex_code AS CORTEX_CODE, snowflake_intelligence AS SNOWFLAKE_INTELLIGENCE,
                       total_credits AS TOTAL_CREDITS
                FROM cost_user_snapshots WHERE snapshot_date = ?""",
+            (today,),
+        ).fetchall()
+        if not rows:
+            return None
+        return [dict(r) for r in rows]
+
+    # --- Cost trend snapshots ---
+
+    def save_cost_trend_snapshot(self, rows: list[dict]):
+        """Save daily cost trend data. Each row has snapshot_date, total_credits, rolling_7d_avg."""
+        conn = self.conn
+        for row in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO cost_trend_snapshots (snapshot_date, total_credits, rolling_7d_avg) VALUES (?, ?, ?)",
+                (row["snapshot_date"], float(row["total_credits"]), row.get("rolling_7d_avg")),
+            )
+        conn.commit()
+
+    def get_cost_trend_cache(self, days: int) -> Optional[list[dict]]:
+        """Read cached daily trend data for last N days."""
+        from datetime import date, timedelta
+        start = (date.today() - timedelta(days=days)).isoformat()
+        rows = self.conn.execute(
+            """SELECT snapshot_date, total_credits, rolling_7d_avg
+               FROM cost_trend_snapshots
+               WHERE snapshot_date >= ?
+               ORDER BY snapshot_date""",
+            (start,),
+        ).fetchall()
+        if not rows:
+            return None
+        return [dict(r) for r in rows]
+
+    # --- Cost storage snapshots ---
+
+    def save_cost_storage_snapshot(self, date: str, rows: list[dict]):
+        """Save per-database storage usage for a date."""
+        conn = self.conn
+        conn.execute("DELETE FROM cost_storage_snapshots WHERE snapshot_date = ?", (date,))
+        for row in rows:
+            conn.execute(
+                """INSERT INTO cost_storage_snapshots
+                   (snapshot_date, database_name, active_bytes, failsafe_bytes, stage_bytes)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (date, row["DATABASE_NAME"],
+                 float(row.get("ACTIVE_BYTES", 0)),
+                 float(row.get("FAILSAFE_BYTES", 0)),
+                 float(row.get("STAGE_BYTES", 0))),
+            )
+        conn.commit()
+
+    def get_cost_storage_cache(self) -> Optional[list[dict]]:
+        """Read cached storage snapshot (today's date)."""
+        from datetime import date
+        today = date.today().isoformat()
+        rows = self.conn.execute(
+            """SELECT database_name AS DATABASE_NAME, active_bytes AS ACTIVE_BYTES,
+                      failsafe_bytes AS FAILSAFE_BYTES, stage_bytes AS STAGE_BYTES
+               FROM cost_storage_snapshots WHERE snapshot_date = ?""",
             (today,),
         ).fetchall()
         if not rows:
