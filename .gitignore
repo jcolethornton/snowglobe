@@ -211,3 +211,7 @@ snowglobe/state/*.json
 
 # Cortex
 .cortex/
+
+# Local config (contains credentials)
+config.yml
+!config.yml.example
