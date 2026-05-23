@@ -105,6 +105,10 @@ def _cmd_check(ctx: SnowglobeContext, args: list):
     ).strip()
 
     if choice == "1":
+        # Clear object state so user gets prompted fresh
+        ctx.object_type = None
+        ctx.object_name = None
+        ctx.privilege = None
         _cmd_access(ctx, args)
     elif choice == "2":
         _cmd_whoaccess(ctx, args)
