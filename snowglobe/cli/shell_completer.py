@@ -1,6 +1,6 @@
 from prompt_toolkit.completion import Completer, Completion
 
-SHELL_COMMANDS = ["check", "roles", "members", "path", "escalation", "scan", "use", "set", "access", "whoaccess", "create", "cost", "optimize", "refresh", "status", "debug", "help", "exit", "?"]
+SHELL_COMMANDS = ["check", "roles", "members", "path", "escalation", "scan", "use", "set", "access", "whoaccess", "create", "cost", "optimize", "drift", "unused", "report", "refresh", "status", "debug", "help", "exit", "?"]
 COST_SUBCOMMANDS = ["summary", "warehouses", "users", "ai", "ai-users", "services", "queries", "trend", "storage", "budget", "replication", "mv"]
 SET_FIELDS = ["object_type", "object_name", "privilege"]
 

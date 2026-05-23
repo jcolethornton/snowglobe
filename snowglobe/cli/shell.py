@@ -63,6 +63,9 @@ def _dispatch(text: str, ctx: SnowglobeContext):
         "create": _cmd_create,
         "cost": _cmd_cost,
         "optimize": _cmd_optimize,
+        "drift": _cmd_drift,
+        "unused": _cmd_unused,
+        "report": _cmd_report,
         "refresh": _cmd_refresh,
         "status": _cmd_status,
         "debug": _cmd_debug,
@@ -1098,6 +1101,57 @@ def _cost_materialized_views(cost_service, days: int, csv_path: str | None, refr
     cli.print_table(df, title=f"Materialized View Costs ({days} days)")
 
 
+def _cmd_drift(ctx: SnowglobeContext, args: list):
+    """Show access changes since last refresh or --days N."""
+    days = None
+    for i, a in enumerate(args):
+        if a == "--days" and i + 1 < len(args):
+            days = int(args[i + 1])
+
+    access_service = AccessService(ctx)
+    result = access_service.detect_drift(days=days)
+    typer.echo(cli.format_drift_text(result))
+
+
+def _cmd_unused(ctx: SnowglobeContext, args: list):
+    """Find roles with granted privileges but no query activity."""
+    days = 90
+    for i, a in enumerate(args):
+        if a == "--days" and i + 1 < len(args):
+            days = int(args[i + 1])
+
+    typer.echo(f"\nChecking for unused privileges (inactive >{days} days)...")
+    access_service = AccessService(ctx)
+    df, error = access_service.detect_unused_privileges(days=days)
+    if error:
+        typer.secho(f"  {error}", fg=typer.colors.YELLOW)
+        return
+    if df.empty:
+        typer.secho("  All roles with data grants are active.", fg=typer.colors.GREEN)
+        return
+    typer.echo("")
+    cli.print_table(df, title=f"Roles with Unused Privileges (>{days} days inactive)")
+
+
+def _cmd_report(ctx: SnowglobeContext, args: list):
+    """Full access report for a user. Usage: report <username>"""
+    if not args:
+        username = ctx.username
+        if not username:
+            typer.echo("Usage: report <username>")
+            return
+    else:
+        username = args[0].upper()
+
+    typer.echo(f"\nGenerating access report for {username}...")
+    access_service = AccessService(ctx)
+    try:
+        result = access_service.inspect_user_report(username)
+        typer.echo(cli.format_user_report(result))
+    except Exception as e:
+        typer.secho(f"  Error: {e}", fg=typer.colors.RED)
+
+
 def _cmd_optimize(ctx: SnowglobeContext, args: list):
     """Analyze a query by ID."""
     if not args:
@@ -1211,6 +1265,9 @@ def _cmd_help(ctx: SnowglobeContext, args: list):
     typer.echo("  cost replication   Replication costs by group")
     typer.echo("  cost mv            Materialized view refresh costs")
     typer.echo("  optimize <id>      Analyze a specific query")
+    typer.echo("  drift              Show access changes since last refresh")
+    typer.echo("  unused             Find roles with unused privileges")
+    typer.echo("  report <user>      Full access report for a user")
     typer.echo("  refresh            Refresh cached state from Snowflake")
     typer.echo("  status             Show current working state")
     typer.echo("  debug              Run connection diagnostics")
