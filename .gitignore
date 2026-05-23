@@ -215,3 +215,7 @@ snowglobe/state/*.json
 # Local config (contains credentials)
 config.yml
 !config.yml.example
+
+# Generated reports
+snowglobe_report_*.md
+snowglobe_cost_*.md
