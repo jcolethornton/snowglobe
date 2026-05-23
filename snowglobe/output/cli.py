@@ -3,6 +3,8 @@ __all__ = [
     "print_table",
     "format_access_text",
     "format_query_insights",
+    "format_drift_text",
+    "format_user_report",
 ]
 import pandas as pd
 
@@ -307,3 +309,105 @@ def format_query_insights(query_id, insights):
 
     output += "\n"
     return output
+
+
+def format_drift_text(drift: dict) -> str:
+    """Format access drift detection results."""
+    if drift.get("error"):
+        return f"  {drift['error']}"
+
+    lines = [f"\nAccess Changes (since {drift['since']})", "=" * 50]
+
+    grants_added = drift.get("grants_added", [])
+    grants_revoked = drift.get("grants_revoked", [])
+    roles_added = drift.get("roles_added", {})
+    roles_removed = drift.get("roles_removed", {})
+    users_added = drift.get("users_added", {})
+    users_removed = drift.get("users_removed", {})
+
+    total_changes = (
+        len(grants_added) + len(grants_revoked)
+        + sum(len(v) for v in roles_added.values())
+        + sum(len(v) for v in roles_removed.values())
+        + sum(len(v) for v in users_added.values())
+        + sum(len(v) for v in users_removed.values())
+    )
+
+    if total_changes == 0:
+        lines.append("\n  No access changes detected.")
+        return "\n".join(lines)
+
+    # Grant changes
+    if grants_added:
+        lines.append(f"\n  Grants Added ({len(grants_added)}):")
+        for g in grants_added[:20]:
+            lines.append(f"    + {g.get('grantee', '?')} : {g.get('privilege', '?')} on {g.get('fqn', '?')}")
+        if len(grants_added) > 20:
+            lines.append(f"    ... and {len(grants_added) - 20} more")
+
+    if grants_revoked:
+        lines.append(f"\n  Grants Revoked ({len(grants_revoked)}):")
+        for g in grants_revoked[:20]:
+            lines.append(f"    - {g.get('grantee', '?')} : {g.get('privilege', '?')} on {g.get('fqn', '?')}")
+        if len(grants_revoked) > 20:
+            lines.append(f"    ... and {len(grants_revoked) - 20} more")
+
+    # Role hierarchy changes
+    if roles_added:
+        lines.append(f"\n  Role Grants Added:")
+        for parent, children in list(roles_added.items())[:10]:
+            for child in children:
+                lines.append(f"    + {parent} granted USAGE on {child}")
+
+    if roles_removed:
+        lines.append(f"\n  Role Grants Revoked:")
+        for parent, children in list(roles_removed.items())[:10]:
+            for child in children:
+                lines.append(f"    - {parent} lost USAGE on {child}")
+
+    # User role changes
+    if users_added:
+        lines.append(f"\n  User Role Assignments Added:")
+        for user, roles in list(users_added.items())[:10]:
+            for role in roles:
+                lines.append(f"    + {user} -> {role}")
+
+    if users_removed:
+        lines.append(f"\n  User Role Assignments Removed:")
+        for user, roles in list(users_removed.items())[:10]:
+            for role in roles:
+                lines.append(f"    - {user} -x- {role}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_user_report(report: dict) -> str:
+    """Format a full user access report."""
+    lines = []
+    username = report["username"]
+
+    lines.append(f"\nAccess Report: {username}")
+    lines.append("=" * 50)
+
+    # Roles
+    lines.append(f"\n  Effective Roles: {report['role_count']}")
+    lines.append(f"  Direct Roles: {', '.join(report['direct_roles'][:10])}")
+    if report.get("excluded_roles"):
+        lines.append(f"  Excluded: {', '.join(report['excluded_roles'])}")
+
+    # Summary
+    lines.append(f"\n  Total Accessible Objects: {report['total_objects']}")
+    lines.append(f"  Total Grants: {report['total_grants']}")
+
+    # By type
+    summary = report.get("grant_summary", {})
+    if summary:
+        lines.append(f"\n  {'OBJECT TYPE':<25} {'OBJECTS':>8} {'PRIVILEGES'}")
+        lines.append(f"  {'─' * 25} {'─' * 8} {'─' * 30}")
+        for obj_type, info in sorted(summary.items(), key=lambda x: x[1]["object_count"], reverse=True):
+            privs = ", ".join(info["privileges"][:5])
+            lines.append(f"  {obj_type:<25} {info['object_count']:>8}  {privs}")
+
+    lines.append("")
+    return "\n".join(lines)
