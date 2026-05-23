@@ -493,3 +493,171 @@ class AccessService:
         result["has_access"] = has_access
 
         return result
+
+    # --- Drift detection ---
+
+    def detect_drift(self, days: int = None) -> dict:
+        """
+        Detect access changes since last refresh (or last N days).
+        Returns structured dict of added/revoked grants, role changes, user changes.
+        """
+        self.setup_state()
+
+        if days:
+            from datetime import datetime, timezone, timedelta
+            since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        else:
+            since = self.db.get_refreshed_at()
+            if not since:
+                return {"error": "No previous refresh found. Run 'refresh' first."}
+
+        sf = self.context.connect()
+        collector = AccessCollector(sf)
+
+        # Collect changes
+        grant_changes = collector.collect_all_grants_incremental(since)
+        role_changes = collector.collect_role_graph_incremental(since)
+        user_changes = collector.collect_user_roles_incremental(since)
+
+        return {
+            "since": since[:19],
+            "grants_added": grant_changes.get("upsert", []),
+            "grants_revoked": grant_changes.get("delete", []),
+            "roles_added": role_changes.get("added", {}),
+            "roles_removed": role_changes.get("removed", {}),
+            "users_added": user_changes.get("added", {}),
+            "users_removed": user_changes.get("removed", {}),
+        }
+
+    # --- Unused privilege detection ---
+
+    def detect_unused_privileges(self, days: int = 90, limit: int = 30) -> tuple:
+        """
+        Find roles with granted privileges that have had no query activity.
+        Compares granted roles against QUERY_HISTORY activity.
+        Returns (DataFrame, error_message).
+        """
+        import pandas as pd
+
+        self.setup_state()
+
+        sql = f"""
+        WITH granted_roles AS (
+            SELECT DISTINCT grantee AS role_key,
+                   REPLACE(grantee, 'ACCOUNT_ROLE::', '') AS role_name
+            FROM grants
+            WHERE privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+              AND granted_on IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'EXTERNAL TABLE')
+        ),
+        active_roles AS (
+            SELECT DISTINCT ROLE_NAME
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+              AND EXECUTION_STATUS = 'SUCCESS'
+              AND QUERY_TYPE IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE')
+        )
+        SELECT g.role_name AS ROLE,
+               COUNT(DISTINCT gr.fqn) AS GRANTED_OBJECTS,
+               CASE WHEN a.ROLE_NAME IS NULL THEN 'INACTIVE' ELSE 'ACTIVE' END AS STATUS
+        FROM granted_roles g
+        LEFT JOIN grants gr ON gr.grantee = g.role_key
+            AND gr.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+            AND gr.granted_on IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'EXTERNAL TABLE')
+        LEFT JOIN active_roles a ON a.ROLE_NAME = g.role_name
+        GROUP BY g.role_name, a.ROLE_NAME
+        HAVING STATUS = 'INACTIVE'
+        ORDER BY GRANTED_OBJECTS DESC
+        LIMIT {limit}
+        """
+
+        # The grants table is local SQLite, but QUERY_HISTORY is on Snowflake.
+        # We need a hybrid approach: get active roles from Snowflake, compare locally.
+        conn = self.context.connect()
+        try:
+            with conn:
+                rows = conn.query(f"""
+                    SELECT DISTINCT ROLE_NAME
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+                    WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                      AND EXECUTION_STATUS = 'SUCCESS'
+                      AND QUERY_TYPE IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE')
+                """)
+            active_roles = {row["ROLE_NAME"] for row in rows}
+        except Exception as e:
+            return pd.DataFrame(), f"Could not query activity history: {e}"
+
+        # Get all roles with data grants from local SQLite
+        grant_rows = self.db.conn.execute("""
+            SELECT grantee, COUNT(DISTINCT fqn) AS object_count
+            FROM grants
+            WHERE privilege IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+              AND granted_on IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'EXTERNAL TABLE')
+            GROUP BY grantee
+            ORDER BY object_count DESC
+        """).fetchall()
+
+        results = []
+        for row in grant_rows:
+            role_key = row["grantee"]
+            # Extract role name from key (ACCOUNT_ROLE::ROLE_NAME)
+            if role_key.startswith("ACCOUNT_ROLE::"):
+                role_name = role_key.replace("ACCOUNT_ROLE::", "")
+            else:
+                continue  # Skip database roles for now
+
+            if role_name not in active_roles:
+                results.append({
+                    "ROLE": role_name,
+                    "GRANTED_OBJECTS": row["object_count"],
+                    "DAYS_INACTIVE": f">{days}",
+                })
+            if len(results) >= limit:
+                break
+
+        df = pd.DataFrame(results)
+        return df, None
+
+    # --- Full user access report ---
+
+    def inspect_user_report(self, username: str) -> dict:
+        """
+        Full access report for a user: all effective roles and all reachable grants.
+        """
+        self.setup_state()
+        self.load_state()
+
+        # Get effective roles
+        direct_roles, excluded_roles = self.user_graph.roles_of(username)
+        effective_roles = self.user_graph.effective_roles(username, self.role_graph)
+
+        # Get all grants for effective roles from SQLite
+        grant_rows = self.db.query_grants_by_grantees(effective_roles)
+
+        # Group by object type
+        by_type: dict[str, list[dict]] = {}
+        for g in grant_rows:
+            obj_type = g["granted_on"]
+            by_type.setdefault(obj_type, []).append(g)
+
+        # Build summary
+        summary = {}
+        for obj_type, grants in sorted(by_type.items()):
+            unique_objects = set(g["fqn"] for g in grants)
+            privileges = set(g["privilege"] for g in grants)
+            summary[obj_type] = {
+                "object_count": len(unique_objects),
+                "privileges": sorted(privileges),
+                "objects": sorted(unique_objects)[:20],  # Cap for display
+                "total_grants": len(grants),
+            }
+
+        return {
+            "username": username,
+            "direct_roles": sorted(direct_roles),
+            "excluded_roles": sorted(excluded_roles),
+            "effective_roles": sorted(effective_roles),
+            "role_count": len(effective_roles),
+            "grant_summary": summary,
+            "total_objects": sum(s["object_count"] for s in summary.values()),
+            "total_grants": sum(s["total_grants"] for s in summary.values()),
+        }
