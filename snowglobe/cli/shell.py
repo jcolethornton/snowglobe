@@ -1138,22 +1138,60 @@ def _cmd_unused(ctx: SnowglobeContext, args: list):
 
 
 def _cmd_report(ctx: SnowglobeContext, args: list):
-    """Full access report for a user. Usage: report <username>"""
+    """Generate reports. Usage: report <username> | report full | report cost"""
     if not args:
-        username = ctx.username
-        if not username:
-            typer.echo("Usage: report <username>")
-            return
-    else:
-        username = args[0].upper()
+        typer.echo("Usage:")
+        typer.echo("  report <username>    Full access report for a user")
+        typer.echo("  report full          Cost + AI + storage + queries report (saves .md)")
+        typer.echo("  report cost          Cost-only report (saves .md)")
+        return
 
-    typer.echo(f"\nGenerating access report for {username}...")
-    access_service = AccessService(ctx)
-    try:
-        result = access_service.inspect_user_report(username)
-        typer.echo(cli.format_user_report(result))
-    except Exception as e:
-        typer.secho(f"  Error: {e}", fg=typer.colors.RED)
+    sub = args[0].lower()
+
+    if sub == "full":
+        from snowglobe.core.report_service import ReportService
+        days = 30
+        for i, a in enumerate(args[1:]):
+            if a == "--days" and i + 2 <= len(args[1:]):
+                days = int(args[i + 2])
+
+        typer.echo(f"\nGenerating full report ({days} days)...")
+        service = ReportService(ctx)
+        output_path = f"snowglobe_report_{__import__('datetime').date.today().isoformat()}.md"
+        _, data = service.generate_and_save(output_path, days=days)
+        typer.echo(service.terminal_summary(data))
+        typer.secho(f"  Report saved: {output_path}", fg=typer.colors.GREEN, bold=True)
+        typer.echo("")
+
+    elif sub == "cost":
+        from snowglobe.core.report_service import ReportService
+        days = 30
+        for i, a in enumerate(args[1:]):
+            if a == "--days" and i + 2 <= len(args[1:]):
+                days = int(args[i + 2])
+
+        typer.echo(f"\nGenerating cost report ({days} days)...")
+        service = ReportService(ctx)
+        data = service.generate_full_report(days=days, top_n=0)
+        data["top_queries"] = []
+        markdown = service.render_markdown(data)
+        output_path = f"snowglobe_cost_{__import__('datetime').date.today().isoformat()}.md"
+        from pathlib import Path
+        Path(output_path).write_text(markdown)
+        typer.echo(service.terminal_summary(data))
+        typer.secho(f"  Report saved: {output_path}", fg=typer.colors.GREEN, bold=True)
+        typer.echo("")
+
+    else:
+        # Treat as username for access report
+        username = args[0].upper()
+        typer.echo(f"\nGenerating access report for {username}...")
+        access_service = AccessService(ctx)
+        try:
+            result = access_service.inspect_user_report(username)
+            typer.echo(cli.format_user_report(result))
+        except Exception as e:
+            typer.secho(f"  Error: {e}", fg=typer.colors.RED)
 
 
 def _cmd_optimize(ctx: SnowglobeContext, args: list):
@@ -1272,6 +1310,8 @@ def _cmd_help(ctx: SnowglobeContext, args: list):
     typer.echo("  drift              Show access changes since last refresh")
     typer.echo("  unused             Find roles with unused privileges")
     typer.echo("  report <user>      Full access report for a user")
+    typer.echo("  report full        Cost/AI/storage/queries report (saves .md)")
+    typer.echo("  report cost        Cost-only report (saves .md)")
     typer.echo("  refresh            Refresh cached state from Snowflake")
     typer.echo("  status             Show current working state")
     typer.echo("  debug              Run connection diagnostics")
