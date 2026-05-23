@@ -24,8 +24,14 @@ dependencies = [
     "sqlglot"
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 snowglobe = "snowglobe.app:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools]
 include-package-data = true
