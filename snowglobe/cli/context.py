@@ -11,6 +11,7 @@ class SnowglobeContext:
     role: Optional[str] = None
     output: str = "table"
     verbose: bool = False
+    vim_mode: bool = False
 
     # Working state (used by shell and interactive prompts)
     target_role: Optional[str] = None
