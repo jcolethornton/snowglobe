@@ -6,7 +6,7 @@ import sys
 import typer
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter, FuzzyCompleter
-from snowglobe.models.privilege import Privilege
+from snowglobe.models.privilege import Privilege, privileges_for_object_type
 from snowglobe.models.access import ObjectType
 
 
@@ -156,36 +156,6 @@ def resolve_access_inputs(
     return resolved_inputs
 
 
-# Privilege suggestions per object type (most common Snowflake privileges)
-PRIVILEGES_BY_TYPE = {
-    "TABLE": ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "OWNERSHIP"],
-    "VIEW": ["SELECT", "REFERENCES", "OWNERSHIP"],
-    "MATERIALIZED VIEW": ["SELECT", "REFERENCES", "OWNERSHIP"],
-    "SCHEMA": ["USAGE", "CREATE TABLE", "CREATE VIEW", "CREATE STAGE", "CREATE PIPE", "CREATE STREAM", "CREATE TASK", "CREATE FUNCTION", "CREATE PROCEDURE", "OWNERSHIP"],
-    "DATABASE": ["USAGE", "MONITOR", "CREATE SCHEMA", "OWNERSHIP"],
-    "WAREHOUSE": ["USAGE", "OPERATE", "MONITOR", "MODIFY", "OWNERSHIP"],
-    "STAGE": ["USAGE", "READ", "WRITE", "OWNERSHIP"],
-    "STREAM": ["SELECT", "OWNERSHIP"],
-    "TASK": ["OPERATE", "MONITOR", "OWNERSHIP"],
-    "PIPE": ["OPERATE", "MONITOR", "OWNERSHIP"],
-    "FUNCTION": ["USAGE", "OWNERSHIP"],
-    "PROCEDURE": ["USAGE", "OWNERSHIP"],
-    "STREAMLIT": ["USAGE", "OWNERSHIP"],
-    "NOTEBOOK": ["USAGE", "OWNERSHIP"],
-    "DYNAMIC TABLE": ["SELECT", "OWNERSHIP"],
-    "ALERT": ["OPERATE", "OWNERSHIP"],
-    "FILE FORMAT": ["USAGE", "OWNERSHIP"],
-    "SEQUENCE": ["USAGE", "OWNERSHIP"],
-    "TAG": ["APPLY", "OWNERSHIP"],
-    "SECRET": ["USAGE", "READ", "OWNERSHIP"],
-}
-
-# Default fallback
-_DEFAULT_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "USAGE", "OWNERSHIP"]
-
-
-def _privileges_for_object_type(object_type: str | None) -> list[str]:
-    """Return context-appropriate privilege suggestions for the given object type."""
-    if not object_type:
-        return _DEFAULT_PRIVILEGES
-    return PRIVILEGES_BY_TYPE.get(object_type.upper(), _DEFAULT_PRIVILEGES)
+# Privilege suggestions per object type now live in snowglobe.models.privilege
+# (used by both the CLI and the TUI). Imported above as `privileges_for_object_type`.
+_privileges_for_object_type = privileges_for_object_type
