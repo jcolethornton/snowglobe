@@ -26,9 +26,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+tui = ["textual>=0.80"]
 
 [project.scripts]
-snowglobe = "snowglobe.app:app"
+snowglobe = "snowglobe.cli.app:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
