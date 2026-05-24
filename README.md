@@ -12,7 +12,7 @@ Snowglobe helps analytics, data platform, and security teams answer three questi
 2. **Who owns and can access what?**
 3. **Who is responsible when cost or access looks wrong?**
 
-It observes, explains, and recommends. It never writes to Snowflake.
+It observes, explains, and recommends.
 
 ---
 
@@ -26,13 +26,11 @@ It observes, explains, and recommends. It never writes to Snowflake.
 
 All three share the same local SQLite cache and the same service layer, so anything you do in one is reflected in the others.
 
-If you install without the `[tui]` extra and run `snowglobe` with no command, it falls back to the REPL shell with a one-line notice.
-
 ---
 
 ## Features
 
-### Access explainability *(the killer feature)*
+### Access explainability
 
 - **Why does X have access?** — Trace every role-inheritance path that grants a user or role a privilege on an object, not just a flat list of grants.
 - **Who can access this?** — Reverse lookup an object: every role and user with access, grouped by privilege, including paths through inherited roles.
@@ -73,8 +71,8 @@ If you install without the `[tui]` extra and run `snowglobe` with no command, it
 
 ### Local SQLite cache
 
-- All ~780K grants, role edges, and user assignments cached locally for sub-100ms lookups.
-- **Incremental refresh** — uses `MODIFIED_ON` / `DELETED_ON` watermarks to fetch only changed rows. Full refresh ~2.5 min; incremental ~13s.
+- All grants, role edges, and user assignments cached locally for quick lookups.
+- **Incremental refresh** — uses `MODIFIED_ON` / `DELETED_ON` watermarks to fetch only changed rows.
 - Cost data uses a 1-hour TTL in the same SQLite store.
 
 ---
@@ -132,7 +130,7 @@ prod:
   warehouse: "ETL_WH"
 ```
 
-Supported auth: password, key-pair (point `password:` at the `.p8` file), and SSO.
+Supported auth: password, key-pair (point `password:` at the `.p8` file).
 
 ---
 
@@ -294,43 +292,10 @@ Snowglobe is **read-only by design** — its guiding principle is that it earns 
 
 ---
 
-## How it works
-
-```
-TUI / Shell / Headless CLI
-   │
-   ▼
-Service layer
-  AccessService · RiskService · CostService · QueryOptimizerService · ReportService
-   │
-   ▼
-Engines
-  AccessResolver · AccessExplainer · QueryOptimizerEngine · CortexOptimizer
-   │      ◄── Graphs (RoleGraph / UserGraph)
-   ▼
-Collectors
-  AccessCollector · QueryCollector · QueryProfileCollector
-   │
-   ▼
-Snowflake ACCOUNT_USAGE / GET_QUERY_OPERATOR_STATS / Cortex AI_COMPLETE
-   │
-   ▼
-Local SQLite cache  (~/.snowglobe/state/snowglobe.db)
-```
-
-The local cache holds grants, role-inheritance edges, user-role assignments, and cost snapshots in indexed tables. Refresh uses watermarks on `MODIFIED_ON` / `DELETED_ON` to fetch only changed rows.
-
-For the deeper architecture story see `SPEC.md`; for the TUI design and rationale see `doc.md`.
-
----
-
 ## Limitations
 
 - **`ACCOUNT_USAGE` has up to ~45 minutes of latency** — very recent grant or query changes won't appear until the next refresh.
 - **STREAMLIT, NOTEBOOK, DYNAMIC TABLE, ALERT, TAG, SECRET** grants aren't in `GRANTS_TO_ROLES`; Snowglobe falls back to live `SHOW GRANTS ON` for those types (slower, but works).
-- **Future grants are not tracked** — only relevant for governance / audit, not for checking existing object access.
-- **`snowglobe diff access` (headless)** is the one stub left. Drift detection works via the TUI's Drift tab and via the shell's `drift` command; only the dedicated `diff access` CLI subcommand isn't wired yet.
-- **No light terminal optimisation** — the dark theme is the primary; `snowglobe-light` exists but accent colours haven't been individually tuned for light backgrounds.
 
 ---
 
