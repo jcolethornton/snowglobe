@@ -1,6 +1,6 @@
 import typer
-from typing import Optional
 from collections import defaultdict
+from typing import Callable, Optional, Protocol
 from snowglobe.state.db import StateDB
 from snowglobe.collectors.access import AccessCollector
 from snowglobe.graphs.role_graph import RoleGraph
@@ -14,6 +14,54 @@ from snowglobe.engines.access.resolver import AccessResolver
 
 # Object types not tracked in GRANTS_TO_ROLES — require SHOW GRANTS ON fallback
 _SHOW_GRANT_TYPES = {"STREAMLIT", "NOTEBOOK", "DYNAMIC TABLE", "ALERT", "TAG", "SECRET"}
+
+
+class RefreshProgress(Protocol):
+    """
+    Sink for refresh / state-load progress output.
+
+    Levels:
+      start   — top-level operation banner (e.g. 'Full refresh...')
+      info    — routine progress / counts (e.g. '  Users: 146')
+      warning — soft warning (stale cache, missing state)
+    """
+    def start(self, msg: str) -> None: ...
+    def info(self, msg: str) -> None: ...
+    def warning(self, msg: str) -> None: ...
+
+
+class TyperRefreshProgress:
+    """Default reporter — renders via typer (matches the current CLI output)."""
+
+    def start(self, msg: str) -> None:
+        typer.secho(msg, fg=typer.colors.CYAN)
+
+    def info(self, msg: str) -> None:
+        typer.echo(msg)
+
+    def warning(self, msg: str) -> None:
+        typer.secho(msg, fg=typer.colors.YELLOW)
+
+
+class CallableRefreshProgress:
+    """
+    TUI-friendly reporter — every line goes through a single `(level, msg)` callback.
+
+        progress = CallableRefreshProgress(lambda level, msg: log.write(level, msg))
+        access_service.refresh_state(progress=progress)
+    """
+
+    def __init__(self, write: Callable[[str, str], None]):
+        self._write = write
+
+    def start(self, msg: str) -> None:
+        self._write("start", msg)
+
+    def info(self, msg: str) -> None:
+        self._write("info", msg)
+
+    def warning(self, msg: str) -> None:
+        self._write("warning", msg)
 
 
 def _parse_object_type(obj_type_str: str) -> ObjectType:
@@ -63,31 +111,34 @@ class AccessService:
     def setup_state(self):
         self.db = StateDB()
 
-    def refresh_state(self, full: bool = False):
+    def refresh_state(self, full: bool = False, progress: Optional[RefreshProgress] = None):
         """
         Refresh state from Snowflake.
         If full=True or no previous state exists, does a complete refresh.
         Otherwise, does an incremental refresh using the last refresh timestamp.
+
+        Progress is reported through `progress` (defaults to typer-coloured stdout).
         """
+        p = progress or TyperRefreshProgress()
         sf = self.context.connect()
         collector = AccessCollector(sf)
 
         # Determine if we can do incremental
         last_refresh = self.db.get_refreshed_at()
         if full or not last_refresh or not self.db.has_state():
-            typer.secho("Full refresh...", fg=typer.colors.CYAN)
-            self._full_refresh(collector)
+            p.start("Full refresh...")
+            self._full_refresh(collector, p)
         else:
-            typer.secho(f"Incremental refresh (since {last_refresh[:19]})...", fg=typer.colors.CYAN)
-            self._incremental_refresh(collector, last_refresh)
+            p.start(f"Incremental refresh (since {last_refresh[:19]})...")
+            self._incremental_refresh(collector, last_refresh, p)
 
-    def _full_refresh(self, collector):
+    def _full_refresh(self, collector, progress: RefreshProgress):
         """Complete refresh — fetch everything into SQLite."""
         # 1. User roles
         user_graph = collector.collect_user_roles()
         self.db.save_user_roles(user_graph.to_dict())
         self.user_graph = user_graph
-        typer.echo(f"  Users: {len(user_graph.assigned_roles)}")
+        progress.info(f"  Users: {len(user_graph.assigned_roles)}")
 
         # 2. Role hierarchy
         role_graph = collector.collect_role_graph()
@@ -97,20 +148,20 @@ class AccessService:
                 edges.append((parent, child))
         self.db.save_role_edges(edges)
         self.role_graph = role_graph
-        typer.echo(f"  Roles: {len(role_graph.parents)}")
+        progress.info(f"  Roles: {len(role_graph.parents)}")
 
         # 3. ALL grants (783K rows)
-        typer.echo("  Grants: fetching...")
+        progress.info("  Grants: fetching...")
         grant_rows = collector.collect_all_grants_bulk()
         self.db.save_grants(grant_rows)
-        typer.echo(f"  Grants: {len(grant_rows)}")
+        progress.info(f"  Grants: {len(grant_rows)}")
 
         # 4. Extra objects (STREAMLIT, NOTEBOOK, DYNAMIC TABLE, ALERT — not in GRANTS_TO_ROLES)
-        typer.echo("  Extra objects: fetching...")
+        progress.info("  Extra objects: fetching...")
         extra_objects = collector.collect_extra_objects()
         self.db.save_extra_objects(extra_objects)
         extra_count = sum(len(v) for v in extra_objects.values())
-        typer.echo(f"  Extra objects: {extra_count} FQNs")
+        progress.info(f"  Extra objects: {extra_count} FQNs")
 
         # 5. Update timestamp
         self.db.set_refreshed_at()
@@ -118,9 +169,9 @@ class AccessService:
         # 6. Load object index from SQLite
         self.object_index = self.db.query_object_index()
         total_objects = sum(len(v) for v in self.object_index.values())
-        typer.echo(f"  Object index: {total_objects} FQNs (derived from grants)")
+        progress.info(f"  Object index: {total_objects} FQNs (derived from grants)")
 
-    def _incremental_refresh(self, collector, since: str):
+    def _incremental_refresh(self, collector, since: str, progress: RefreshProgress):
         """
         Incremental refresh — only fetch changes since last refresh.
         """
@@ -131,9 +182,9 @@ class AccessService:
                 added=user_changes["added"],
                 removed=user_changes["removed"],
             )
-            typer.echo(f"  Users: +{len(user_changes['added'])} / -{len(user_changes['removed'])} changes")
+            progress.info(f"  Users: +{len(user_changes['added'])} / -{len(user_changes['removed'])} changes")
         else:
-            typer.echo("  Users: no changes")
+            progress.info("  Users: no changes")
 
         # 2. Role graph — incremental
         role_changes = collector.collect_role_graph_incremental(since)
@@ -149,9 +200,9 @@ class AccessService:
             self.db.upsert_role_edges_incremental(
                 added=added_edges, removed=removed_edges
             )
-            typer.echo(f"  Roles: +{len(role_changes['added'])} / -{len(role_changes['removed'])} changes")
+            progress.info(f"  Roles: +{len(role_changes['added'])} / -{len(role_changes['removed'])} changes")
         else:
-            typer.echo("  Roles: no changes")
+            progress.info("  Roles: no changes")
 
         # 3. All grants — incremental
         grant_changes = collector.collect_all_grants_incremental(since)
@@ -160,28 +211,35 @@ class AccessService:
                 upserts=grant_changes["upsert"],
                 deletes=grant_changes["delete"],
             )
-            typer.echo(f"  Grants: +{len(grant_changes['upsert'])} / -{len(grant_changes['delete'])} changes")
+            progress.info(f"  Grants: +{len(grant_changes['upsert'])} / -{len(grant_changes['delete'])} changes")
         else:
-            typer.echo("  Grants: no changes")
+            progress.info("  Grants: no changes")
 
         # 4. Update timestamp
         self.db.set_refreshed_at()
 
-        # 5. Load graphs into memory
-        self.load_state()
+        # 5. Reload graphs into memory after the incremental upserts
+        self.load_state(progress=progress, force=True)
 
-    def load_state(self):
-        """Load role graph and user graph into memory from SQLite."""
+    def load_state(self, progress: Optional[RefreshProgress] = None, force: bool = False):
+        """Load role graph and user graph into memory from SQLite.
+
+        Idempotent on the instance — subsequent calls are no-ops unless `force=True`
+        or graphs aren't loaded. This lets a long-lived caller (the TUI) hold one
+        AccessService and have `inspect_access` re-call `load_state` internally
+        without re-paying the load cost.
+        """
+        if not force and getattr(self, "role_graph", None) is not None:
+            return
+        p = progress or TyperRefreshProgress()
+
         if not self.db.has_state():
-            typer.secho(
-                "No cached state found. Fetching from Snowflake...",
-                fg=typer.colors.YELLOW
-            )
-            self.refresh_state()
+            p.warning("No cached state found. Fetching from Snowflake...")
+            self.refresh_state(progress=p)
             return
 
         # Check staleness
-        self._check_staleness()
+        self._check_staleness(p)
 
         # Load role graph
         rg_data = self.db.load_role_graph_data()
@@ -197,7 +255,7 @@ class AccessService:
         # Object index (derived from grants table)
         self.object_index = self.db.query_object_index()
 
-    def _check_staleness(self):
+    def _check_staleness(self, progress: RefreshProgress):
         """Warn if cached state is older than 24 hours."""
         from datetime import datetime, timezone
 
@@ -213,10 +271,7 @@ class AccessService:
             if hours > 24:
                 days = int(hours // 24)
                 label = f"{days} day(s)" if days >= 1 else f"{int(hours)} hour(s)"
-                typer.secho(
-                    f"State is {label} old. Run 'refresh' to update.",
-                    fg=typer.colors.YELLOW
-                )
+                progress.warning(f"State is {label} old. Run 'refresh' to update.")
         except (ValueError, TypeError):
             pass
 
@@ -269,8 +324,7 @@ class AccessService:
         elif role and not username:
             inspect_type = "role"
         else:
-            typer.secho("Must provide either --username or --role.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+            raise ValueError("Must provide either username or role (not both, not neither).")
 
         database = object_name_upper.split(".", 1)[0] if object_name_upper else None
 
@@ -286,14 +340,8 @@ class AccessService:
 
         query = AccessExplainer(resolver=self.resolver, **args)
         if inspect_type == "user":
-            query_output = query.user_access(username=username)
-        elif inspect_type == "role":
-            query_output = query.role_access(role=role)
-        else:
-            typer.secho("Invalid inspect type. Exiting.", fg=typer.colors.RED)
-            raise typer.Exit()
-
-        return query_output
+            return query.user_access(username=username)
+        return query.role_access(role=role)
 
     def inspect_reverse(
         self,
@@ -403,8 +451,7 @@ class AccessService:
             identity_type = "role"
             all_roles = {role} | self.role_graph.all_ancestors(role)
         else:
-            typer.secho("Must provide either --username or --role.", fg=typer.colors.RED)
-            raise typer.Exit(1)
+            raise ValueError("Must provide either username or role (not both, not neither).")
 
         # Query CREATE grants from SQLite
         create_rows = self.db.query_create_grants(
