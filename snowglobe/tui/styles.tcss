@@ -1,0 +1,410 @@
+/* Snowglobe TUI — theme-aware styles.
+
+   Colour values come from the active Textual theme via $variables, so
+   Ctrl-P → "Change theme" actually repaints everything. The two branded
+   themes (`snowglobe-dark`, `snowglobe-light`) are registered on the
+   App; Textual's built-ins still work for comparison.
+
+   Brand mapping (both Snowglobe themes use the same accent values, only
+   background/foreground change between dark and light):
+
+     $primary    Hero Blue   — buttons, borders, accents
+     $secondary  Deep Blue   — reserved (rarely used directly)
+     $accent     Yellow      — highlights, stale-cache warnings
+     $panel      Deep Blue (dark) / Sky (light) — header, nav, side panels
+     $surface    elevated panels, table backgrounds
+     $warning    Yellow / orange
+     $error      red
+     $success    green
+     $snowglobe-diff   orange — risk-scan diff line (custom var; default below)
+*/
+
+/* Default for our custom variable so non-Snowglobe themes (nord, monokai,
+   the Textual built-ins) still resolve it on theme switch. The Snowglobe
+   themes override it via their `variables` dict to tune for light/dark. */
+$snowglobe-diff: #FF7043;
+
+Screen {
+    background: $background;
+}
+
+/* --- App shell --- */
+
+SnowglobeHeader {
+    height: 3;
+    background: $panel;
+    color: $foreground;
+    padding: 0 2;
+}
+
+SnowglobeHeader .header-title {
+    color: $accent;
+    text-style: bold;
+}
+
+SnowglobeHeader .header-meta {
+    color: $foreground;
+}
+
+CacheBadge.fresh   { color: $success; }
+CacheBadge.stale   { color: $warning; }
+CacheBadge.missing { color: $error; text-style: bold; }
+
+#main {
+    height: 1fr;
+}
+
+NavSidebar {
+    width: 16;
+    background: $panel;
+    padding: 1 1;
+    border-right: solid $primary;
+}
+
+NavSidebar ListView {
+    background: transparent;
+}
+
+NavSidebar ListItem {
+    background: transparent;
+    color: $foreground;
+    padding: 0 1;
+}
+
+NavSidebar ListItem.--highlight {
+    background: $primary;
+    color: white;
+    text-style: bold;
+}
+
+#content {
+    padding: 1 2;
+}
+
+.screen-title {
+    text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+}
+
+.placeholder {
+    color: $foreground;
+}
+
+/* --- Home screen --- */
+
+#home-kpis {
+    height: 8;
+    margin-bottom: 1;
+}
+
+.kpi-card {
+    width: 1fr;
+    height: 7;
+    border: round $primary;
+    padding: 0 1;
+    margin-right: 1;
+}
+
+.kpi-title {
+    color: $accent;
+    text-style: bold;
+    margin-bottom: 0;
+}
+
+.kpi-body {
+    color: $foreground;
+    height: auto;
+}
+
+#home-body {
+    height: 1fr;
+}
+
+#home-actions {
+    width: 26;
+    margin-right: 1;
+}
+
+#home-actions .actions-list {
+    color: $foreground;
+    padding: 0 1;
+}
+
+#home-queries {
+    width: 1fr;
+}
+
+#home-queries-table {
+    height: 1fr;
+    background: $background;
+}
+
+/* --- Access screen form (shared by all access tabs) --- */
+
+#access-form,
+.access-form {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-row {
+    height: 3;
+    padding: 0 0;
+    margin-bottom: 0;
+}
+
+.form-label {
+    width: 14;
+    padding-top: 1;
+    color: $foreground;
+}
+
+.form-input,
+.form-select {
+    width: 1fr;
+}
+
+#run-btn {
+    margin-top: 1;
+}
+
+#access-result,
+#check-result,
+#wa-result,
+#cr-result,
+#pa-result,
+#dr-result {
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+    background: $background;
+}
+
+.hint {
+    color: $foreground;
+    text-style: italic;
+    padding: 0 1;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+TabbedContent Tabs {
+    background: $panel;
+}
+
+Tree {
+    background: transparent;
+}
+
+Tree > .tree--label {
+    color: $foreground;
+}
+
+Tree > .tree--label-highlighted {
+    background: $primary;
+    color: white;
+}
+
+/* --- Refresh screen --- */
+
+#refresh-top {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.panel {
+    width: 1fr;
+    height: auto;
+    border: round $primary;
+    padding: 0 1;
+    margin-right: 1;
+}
+
+.panel-title {
+    color: $accent;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.stats-text {
+    color: $foreground;
+    height: auto;
+}
+
+#refresh-actions Button {
+    margin-bottom: 1;
+    width: 100%;
+}
+
+#refresh-log {
+    height: 1fr;
+    border: round $panel;
+    padding: 0 1;
+    background: $background;
+    color: $foreground;
+}
+
+/* --- Cost screen --- */
+
+#cost-controls {
+    height: 3;
+    margin-bottom: 1;
+}
+
+.cost-window {
+    width: 20;
+    margin: 0 1;
+}
+
+#cost-controls Button {
+    margin-left: 2;
+}
+
+#cost-main {
+    height: 1fr;
+}
+
+#cost-views-pane {
+    width: 28;
+    margin-right: 1;
+}
+
+#cost-views-list {
+    background: transparent;
+    height: 1fr;
+}
+
+#cost-content {
+    width: 1fr;
+}
+
+#cost-status {
+    height: auto;
+    margin-bottom: 1;
+    color: $accent;
+    text-style: bold;
+}
+
+#cost-table {
+    height: 1fr;
+    background: $background;
+}
+
+/* --- Risk screen --- */
+
+.actions-row {
+    height: 3;
+    margin-bottom: 1;
+}
+
+.actions-row Button {
+    margin-right: 1;
+}
+
+#rs-summary {
+    color: $accent;
+    text-style: bold;
+    height: auto;
+    margin-bottom: 0;
+}
+
+#rs-diff {
+    color: $snowglobe-diff;
+    text-style: italic;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#rs-table,
+#dm-table,
+#dg-table,
+#un-table {
+    height: 1fr;
+    background: $background;
+}
+
+#es-result {
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+    background: $background;
+}
+
+/* --- Tune screen --- */
+
+#tu-controls {
+    height: 3;
+    margin-bottom: 0;
+}
+
+#tu-controls .form-input {
+    width: 1fr;
+}
+
+#tu-controls Button {
+    margin-left: 1;
+}
+
+#tu-status {
+    color: $accent;
+    text-style: italic;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#tu-body {
+    height: 1fr;
+}
+
+#tu-sql-pane,
+#tu-analysis-pane {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#tu-sql {
+    height: 1fr;
+    background: $background;
+    padding: 1;
+}
+
+#tu-heuristics {
+    padding: 1;
+    color: $foreground;
+    height: 1fr;
+}
+
+#tu-insights-table,
+#tu-exp-table {
+    height: 1fr;
+    background: $background;
+}
+
+#tu-tree {
+    background: $background;
+    height: 1fr;
+}
+
+#tu-ai {
+    background: $background;
+    color: $foreground;
+    padding: 1;
+    height: 1fr;
+}
+
+/* --- Reports screen --- */
+
+#rp-form {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#rp-preview {
+    height: 1fr;
+    background: $background;
+    border: round $primary;
+    padding: 1;
+}
