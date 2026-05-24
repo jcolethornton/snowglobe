@@ -1,6 +1,6 @@
 import typer
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional, Protocol
 
 debug_app = typer.Typer(
     help="Diagnose configuration and connectivity issues",
@@ -8,90 +8,170 @@ debug_app = typer.Typer(
 )
 
 
-def _pass(msg: str):
-    typer.secho(f"  ✓ {msg}", fg=typer.colors.GREEN)
+class DiagnosticsReporter(Protocol):
+    """
+    Sink for diagnostics output. Each frontend (CLI, TUI, test) supplies one.
+
+    Levels:
+      header — top banner / separator
+      step   — "[n/total] label"
+      ok     — success line for the current check
+      fail   — failure line + optional hint
+      info   — supplementary detail or remediation tip
+      done   — final summary line at the end of a successful run
+    """
+    def header(self, msg: str) -> None: ...
+    def step(self, n: int, total: int, label: str) -> None: ...
+    def ok(self, msg: str) -> None: ...
+    def fail(self, msg: str, hint: str = "") -> None: ...
+    def info(self, msg: str) -> None: ...
+    def done(self, msg: str) -> None: ...
 
 
-def _fail(msg: str, hint: str = ""):
-    typer.secho(f"  ✗ {msg}", fg=typer.colors.RED)
-    if hint:
-        typer.secho(f"    → {hint}", fg=typer.colors.YELLOW)
+class TyperReporter:
+    """Default reporter — renders coloured output via typer."""
+
+    def header(self, msg: str) -> None:
+        typer.echo(f"\n{msg}")
+        typer.echo("=" * 40)
+
+    def step(self, n: int, total: int, label: str) -> None:
+        typer.echo(f"\n[{n}/{total}] {label}")
+
+    def ok(self, msg: str) -> None:
+        typer.secho(f"  ✓ {msg}", fg=typer.colors.GREEN)
+
+    def fail(self, msg: str, hint: str = "") -> None:
+        typer.secho(f"  ✗ {msg}", fg=typer.colors.RED)
+        if hint:
+            typer.secho(f"    → {hint}", fg=typer.colors.YELLOW)
+
+    def info(self, msg: str) -> None:
+        typer.secho(f"    {msg}", dim=True)
+
+    def done(self, msg: str) -> None:
+        typer.echo("\n" + "=" * 40)
+        typer.secho(msg, fg=typer.colors.GREEN, bold=True)
+        typer.echo("")
 
 
-def _info(msg: str):
-    typer.secho(f"    {msg}", dim=True)
+class CallableReporter:
+    """
+    Reporter that delegates every line to a single callback `(level, msg)`.
+
+    Use from the TUI to route output into a RichLog or any other sink:
+
+        reporter = CallableReporter(lambda level, msg: my_log.write(level, msg))
+        run_diagnostics(reporter=reporter)
+    """
+
+    def __init__(self, write: Callable[[str, str], None]):
+        self._write = write
+
+    def header(self, msg: str) -> None:
+        self._write("header", msg)
+
+    def step(self, n: int, total: int, label: str) -> None:
+        self._write("step", f"[{n}/{total}] {label}")
+
+    def ok(self, msg: str) -> None:
+        self._write("ok", msg)
+
+    def fail(self, msg: str, hint: str = "") -> None:
+        self._write("fail", msg)
+        if hint:
+            self._write("info", f"→ {hint}")
+
+    def info(self, msg: str) -> None:
+        self._write("info", msg)
+
+    def done(self, msg: str) -> None:
+        self._write("done", msg)
 
 
-def run_diagnostics(profile_name: str = "default", verbose: bool = False):
-    """Run all diagnostic checks and report results."""
+def run_diagnostics(
+    profile_name: str = "default",
+    verbose: bool = False,
+    reporter: Optional[DiagnosticsReporter] = None,
+) -> bool:
+    """
+    Run all diagnostic checks and report results via the supplied reporter.
 
-    typer.echo("\nSnowglobe Connection Diagnostics")
-    typer.echo("=" * 40)
+    Returns True if every check passed, False otherwise. Does not raise on
+    a failed check — callers decide how to react (CLI exits, TUI just shows
+    the log).
+    """
+    r = reporter or TyperReporter()
+    TOTAL = 8
+
+    r.header("Snowglobe Connection Diagnostics")
 
     # --- Step 1: Config file exists ---
-    typer.echo("\n[1/8] Config file")
+    r.step(1, TOTAL, "Config file")
     from snowglobe.config.loader import SnowglobeConfig
     config_path = SnowglobeConfig.CONFIG_PATH
 
     if not config_path.exists():
-        _fail(f"Config not found at {config_path}")
-        _info(f"Create {config_path} with your Snowflake profiles.")
-        _info("See: snowglobe/config.yml for an example.")
-        raise typer.Exit(1)
-    _pass(f"Found {config_path}")
+        r.fail(f"Config not found at {config_path}")
+        r.info(f"Create {config_path} with your Snowflake profiles.")
+        r.info("See: snowglobe/config.yml for an example.")
+        return False
+    r.ok(f"Found {config_path}")
 
     # --- Step 2: Valid YAML ---
-    typer.echo("\n[2/8] YAML parsing")
+    r.step(2, TOTAL, "YAML parsing")
     try:
         import yaml
         with open(config_path, "r") as f:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
-            _fail("Config file is not a YAML mapping")
-            raise typer.Exit(1)
-        _pass(f"Valid YAML with {len(raw)} profile(s): {', '.join(raw.keys())}")
+            r.fail("Config file is not a YAML mapping")
+            return False
+        r.ok(f"Valid YAML with {len(raw)} profile(s): {', '.join(raw.keys())}")
     except yaml.YAMLError as e:
-        _fail(f"YAML parse error: {e}")
-        raise typer.Exit(1)
+        r.fail(f"YAML parse error: {e}")
+        return False
 
     # --- Step 3: Profile exists ---
-    typer.echo(f"\n[3/8] Profile '{profile_name}'")
+    r.step(3, TOTAL, f"Profile '{profile_name}'")
     try:
         config = SnowglobeConfig()
         profile = config.get_profile(profile_name)
-        _pass(f"Profile '{profile_name}' loaded")
+        r.ok(f"Profile '{profile_name}' loaded")
     except Exception as e:
-        _fail(f"Profile not found: {e}")
-        _info(f"Available profiles: {', '.join(config.list_profiles())}")
-        raise typer.Exit(1)
+        r.fail(f"Profile not found: {e}")
+        try:
+            r.info(f"Available profiles: {', '.join(config.list_profiles())}")
+        except Exception:
+            pass
+        return False
 
     # --- Step 4: Required fields ---
-    typer.echo("\n[4/8] Required fields")
+    r.step(4, TOTAL, "Required fields")
     required = ["account", "user"]
     missing = [f for f in required if not profile.get(f)]
     has_auth = bool(profile.get("password") or profile.get("private_key_path"))
 
     if missing:
-        _fail(f"Missing required fields: {', '.join(missing)}")
-        raise typer.Exit(1)
+        r.fail(f"Missing required fields: {', '.join(missing)}")
+        return False
     if not has_auth:
-        _fail("No auth method — need 'password' or 'private_key_path'")
-        raise typer.Exit(1)
-    _pass(f"account={profile['account']}, user={profile['user']}")
+        r.fail("No auth method — need 'password' or 'private_key_path'")
+        return False
+    r.ok(f"account={profile['account']}, user={profile['user']}")
 
     # --- Step 5: Auth credentials resolve ---
-    typer.echo("\n[5/8] Auth credentials")
+    r.step(5, TOTAL, "Auth credentials")
     auth_method = "key_pair" if profile.get("private_key_path") else "password"
 
     if auth_method == "key_pair":
         key_path = Path(profile["private_key_path"]).expanduser()
         if not key_path.exists():
-            _fail(f"Key file not found: {key_path}")
-            _info("Check that private_key_path points to an existing .pem file")
-            raise typer.Exit(1)
-        _pass(f"Key pair auth — key file exists at {key_path}")
+            r.fail(f"Key file not found: {key_path}")
+            r.info("Check that private_key_path points to an existing .pem file")
+            return False
+        r.ok(f"Key pair auth — key file exists at {key_path}")
 
-        # Try to parse the key
         try:
             from cryptography.hazmat.primitives import serialization
             pwd = profile.get("private_key_pwd")
@@ -100,21 +180,21 @@ def run_diagnostics(profile_name: str = "default", verbose: bool = False):
                     f.read(),
                     password=pwd.encode() if pwd else None,
                 )
-            _pass("Key file is a valid PEM private key")
+            r.ok("Key file is a valid PEM private key")
         except Exception as e:
-            _fail(f"Key file parse error: {e}")
-            _info("Ensure the key is in PEM format and the passphrase (if any) is correct")
-            raise typer.Exit(1)
+            r.fail(f"Key file parse error: {e}")
+            r.info("Ensure the key is in PEM format and the passphrase (if any) is correct")
+            return False
     else:
         password = profile.get("password", "")
         if password.startswith("$") or not password:
-            _fail(f"Password appears unresolved: '{password}'")
-            _info("Check that the environment variable is set")
-            raise typer.Exit(1)
-        _pass(f"Password auth — credentials present")
+            r.fail(f"Password appears unresolved: '{password}'")
+            r.info("Check that the environment variable is set")
+            return False
+        r.ok("Password auth — credentials present")
 
     # --- Step 6: Snowflake connectivity ---
-    typer.echo("\n[6/8] Snowflake connection")
+    r.step(6, TOTAL, "Snowflake connection")
     try:
         from snowglobe.snowflake.connection import SnowflakeReadOnly
         sf = SnowflakeReadOnly(
@@ -127,45 +207,44 @@ def run_diagnostics(profile_name: str = "default", verbose: bool = False):
             private_key_pwd=profile.get("private_key_pwd"),
         )
         with sf:
-            _pass("Connected to Snowflake successfully")
+            r.ok("Connected to Snowflake successfully")
 
             # --- Step 7: Role ---
-            typer.echo("\n[7/8] Role")
+            r.step(7, TOTAL, "Role")
             result = sf.query("SELECT CURRENT_ROLE() AS role")
             current_role = result[0]["ROLE"] if result else None
             if current_role:
-                _pass(f"Active role: {current_role}")
+                r.ok(f"Active role: {current_role}")
             else:
-                _fail("Could not determine current role")
+                r.fail("Could not determine current role")
 
             # --- Step 8: Warehouse ---
-            typer.echo("\n[8/8] Warehouse")
+            r.step(8, TOTAL, "Warehouse")
             result = sf.query("SELECT CURRENT_WAREHOUSE() AS wh")
             current_wh = result[0]["WH"] if result else None
             if current_wh:
-                _pass(f"Active warehouse: {current_wh}")
+                r.ok(f"Active warehouse: {current_wh}")
             else:
-                _fail("No warehouse active", hint="Set 'warehouse' in your profile or run USE WAREHOUSE")
+                r.fail("No warehouse active", hint="Set 'warehouse' in your profile or run USE WAREHOUSE")
 
     except Exception as e:
-        _fail(f"Connection failed: {e}")
+        r.fail(f"Connection failed: {e}")
         error_str = str(e).lower()
         if "incorrect username or password" in error_str:
-            _info("Check your username and password in the profile")
+            r.info("Check your username and password in the profile")
         elif "account" in error_str:
-            _info(f"Verify account identifier: {profile['account']}")
-            _info("Format should be: <orgname>-<accountname> or <locator>.<region>.<cloud>")
+            r.info(f"Verify account identifier: {profile['account']}")
+            r.info("Format should be: <orgname>-<accountname> or <locator>.<region>.<cloud>")
         elif "private key" in error_str:
-            _info("Key pair auth failed — check key file and passphrase")
+            r.info("Key pair auth failed — check key file and passphrase")
         elif "timeout" in error_str or "could not connect" in error_str:
-            _info("Network issue — check firewall, VPN, or proxy settings")
+            r.info("Network issue — check firewall, VPN, or proxy settings")
         else:
-            _info("See Snowflake documentation for connection troubleshooting")
-        raise typer.Exit(1)
+            r.info("See Snowflake documentation for connection troubleshooting")
+        return False
 
-    typer.echo("\n" + "=" * 40)
-    typer.secho("All checks passed.", fg=typer.colors.GREEN, bold=True)
-    typer.echo("")
+    r.done("All checks passed.")
+    return True
 
 
 @debug_app.callback(invoke_without_command=True)
@@ -182,4 +261,5 @@ def debug(
     context = ctx.obj
     name = profile_name or (context.profile_name if context else "default")
     verbose = context.verbose if context else False
-    run_diagnostics(profile_name=name, verbose=verbose)
+    if not run_diagnostics(profile_name=name, verbose=verbose):
+        raise typer.Exit(1)
