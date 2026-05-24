@@ -553,6 +553,14 @@ _PRIVILEGED_ROLES = {
     "ACCOUNT_ROLE::USERADMIN",
 }
 
+_TARGET_WEIGHTS = {
+    "ACCOUNT_ROLE::ACCOUNTADMIN": 10,
+    "ACCOUNT_ROLE::SYSADMIN": 7,
+    "ACCOUNT_ROLE::SECURITYADMIN": 8,
+    "ACCOUNT_ROLE::USERADMIN": 6,
+}
+_DEFAULT_TARGET_WEIGHT = 5  # For roles with MANAGE GRANTS etc.
+
 
 def _get_privileged_targets(ctx: SnowglobeContext) -> set:
     """Get all privileged roles — built-in admins + roles with dangerous account privileges."""
