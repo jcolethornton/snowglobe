@@ -53,15 +53,19 @@ def check(
     )
 
     # Run the access check with fully resolved args
-    query_output = access_service.inspect_access(
-        username=resolved["username"],
-        role=resolved["role"],
-        object_type=resolved["object_type"],
-        object_name=resolved["object_name"],
-        privilege=resolved["privilege"],
-        ignore_excluded_roles=ignore_excluded_roles,
-        refresh_state=False,  # Already refreshed above if needed
-    )
+    try:
+        query_output = access_service.inspect_access(
+            username=resolved["username"],
+            role=resolved["role"],
+            object_type=resolved["object_type"],
+            object_name=resolved["object_name"],
+            privilege=resolved["privilege"],
+            ignore_excluded_roles=ignore_excluded_roles,
+            refresh_state=False,  # Already refreshed above if needed
+        )
+    except ValueError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
 
     # Output
     if output == "text":
@@ -97,12 +101,16 @@ def create(
         raise typer.Exit(1)
 
     access_service = AccessService(context)
-    result = access_service.inspect_create(
-        username=username,
-        role=role,
-        privilege=privilege,
-        scope=scope,
-    )
+    try:
+        result = access_service.inspect_create(
+            username=username,
+            role=role,
+            privilege=privilege,
+            scope=scope,
+        )
+    except ValueError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
 
     if output == "text":
         typer.echo(cli.format_create_text(result))
