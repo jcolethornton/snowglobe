@@ -545,88 +545,14 @@ def _cmd_path(ctx: SnowglobeContext, args: list):
             typer.echo(f"    ... and {len(paths) - 10} more paths")
 
 
-# Privileged target roles (escalation endpoints)
-_PRIVILEGED_ROLES = {
-    "ACCOUNT_ROLE::ACCOUNTADMIN",
-    "ACCOUNT_ROLE::SYSADMIN",
-    "ACCOUNT_ROLE::SECURITYADMIN",
-    "ACCOUNT_ROLE::USERADMIN",
-}
-
-_TARGET_WEIGHTS = {
-    "ACCOUNT_ROLE::ACCOUNTADMIN": 10,
-    "ACCOUNT_ROLE::SYSADMIN": 7,
-    "ACCOUNT_ROLE::SECURITYADMIN": 8,
-    "ACCOUNT_ROLE::USERADMIN": 6,
-}
-_DEFAULT_TARGET_WEIGHT = 5  # For roles with MANAGE GRANTS etc.
-
-
-def _get_privileged_targets(ctx: SnowglobeContext) -> set:
-    """Get all privileged roles — built-in admins + roles with dangerous account privileges."""
-    targets = set(_PRIVILEGED_ROLES)
-    from snowglobe.state.db import StateDB
-    db = StateDB()
-    # Roles with dangerous account-level grants
-    rows = db.conn.execute(
-        """SELECT DISTINCT grantee FROM grants
-           WHERE privilege IN ('MANAGE GRANTS', 'CREATE ROLE', 'CREATE USER')
-           AND granted_on = 'ACCOUNT'"""
-    ).fetchall()
-    for row in rows:
-        targets.add(row["grantee"])
-
-    # Roles with OWNERSHIP on databases (can grant anything within)
-    rows = db.conn.execute(
-        """SELECT DISTINCT grantee FROM grants
-           WHERE privilege = 'OWNERSHIP'
-           AND granted_on = 'DATABASE'"""
-    ).fetchall()
-    for row in rows:
-        targets.add(row["grantee"])
-
-    # Roles with IMPORTED PRIVILEGES on SNOWFLAKE database
-    rows = db.conn.execute(
-        """SELECT DISTINCT grantee FROM grants
-           WHERE privilege = 'IMPORTED PRIVILEGES'
-           AND fqn = 'SNOWFLAKE'"""
-    ).fetchall()
-    for row in rows:
-        targets.add(row["grantee"])
-
-    return targets
-
-
-def _get_dangerous_direct_grants() -> list[dict]:
-    """Find roles with dangerous direct grants (independent of hierarchy)."""
-    from snowglobe.state.db import StateDB
-    db = StateDB()
-    rows = db.conn.execute(
-        """SELECT grantee AS ROLE, privilege AS PRIVILEGE, granted_on AS OBJECT_TYPE, fqn AS OBJECT
-           FROM grants
-           WHERE (privilege IN ('MANAGE GRANTS', 'CREATE ROLE', 'CREATE USER', 'IMPORTED PRIVILEGES')
-                  AND granted_on = 'ACCOUNT')
-              OR (privilege = 'OWNERSHIP' AND granted_on IN ('DATABASE', 'WAREHOUSE'))
-           ORDER BY privilege, grantee"""
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def _calculate_risk_score(hops: int, user_count: int, target: str) -> float:
-    """Composite risk score: target_weight * (1/hops) * log2(user_count + 1)."""
-    import math
-    weight = _TARGET_WEIGHTS.get(target, _DEFAULT_TARGET_WEIGHT)
-    return round(weight * (1 / max(hops, 1)) * math.log2(user_count + 2), 1)
-
-
 def _cmd_escalation(ctx: SnowglobeContext, args: list):
     """Check if a role can reach admin privileges via inheritance."""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter, FuzzyCompleter
+    from snowglobe.core.risk_service import RiskService
 
     session = PromptSession()
 
-    # Prompt for role
     role = args[0] if args else None
     if not role:
         items = list(ctx.role_graph.roles.keys())
@@ -642,19 +568,15 @@ def _cmd_escalation(ctx: SnowglobeContext, args: list):
         typer.secho("Role required.", fg=typer.colors.RED)
         return
 
-    targets = _get_privileged_targets(ctx)
+    result = RiskService(ctx).check_escalation(role, ctx.role_graph, ctx.user_graph)
 
-    # Check if the role itself IS a privileged role
-    if role in targets:
-        typer.echo("")
+    typer.echo("")
+
+    if result["is_privileged"]:
         typer.secho(f"  {role} IS a privileged role.", fg=typer.colors.YELLOW, bold=True)
         return
 
-    # Find which privileged targets are reachable
-    ancestors = ctx.role_graph.all_ancestors(role)
-    reachable = ancestors & targets
-
-    typer.echo("")
+    reachable = result["reachable_targets"]
     if not reachable:
         typer.secho(f"  {role} has NO escalation path to admin roles.", fg=typer.colors.GREEN, bold=True)
         typer.echo("  This role cannot reach ACCOUNTADMIN, SYSADMIN, SECURITYADMIN, or any role with MANAGE GRANTS.")
@@ -663,40 +585,24 @@ def _cmd_escalation(ctx: SnowglobeContext, args: list):
     typer.secho(f"  {role} can reach {len(reachable)} privileged role(s):", fg=typer.colors.RED, bold=True)
     typer.echo("")
 
-    # Show shortest path to each reachable target
-    for target in sorted(reachable):
-        path = ctx.role_graph.shortest_path(role, target)
-        if path:
-            hops = len(path) - 1
-            color = typer.colors.RED if hops <= 3 else typer.colors.YELLOW
-            typer.secho(f"  → {target} ({hops} hops)", fg=color)
-            typer.echo(f"    {' → '.join(path)}")
-            typer.echo("")
+    for entry in reachable:
+        hops = entry["hops"]
+        color = typer.colors.RED if hops <= 3 else typer.colors.YELLOW
+        typer.secho(f"  → {entry['target']} ({hops} hops)", fg=color)
+        typer.echo(f"    {' → '.join(entry['path'])}")
+        typer.echo("")
 
-    # Show affected users — who has this role (directly or inherited)?
-    direct_users = []
-    inherited_users = []
-    for user, assigned in ctx.user_graph.assigned_roles.items():
-        if role in assigned:
-            direct_users.append(user)
-        else:
-            effective = set(assigned)
-            for r in assigned:
-                effective |= ctx.role_graph.all_ancestors(r)
-            if role in effective:
-                inherited_users.append(user)
-
+    direct_users = result["affected_users"]["direct"]
+    inherited_users = result["affected_users"]["inherited"]
     total_users = len(direct_users) + len(inherited_users)
     if total_users > 0:
         typer.secho(f"  Users who can escalate via this role ({total_users}):", fg=typer.colors.CYAN)
-        if direct_users:
-            for u in sorted(direct_users):
-                typer.echo(f"    {u} (directly assigned)")
-        if inherited_users:
-            for u in sorted(inherited_users)[:20]:
-                typer.echo(f"    {u} (inherited)")
-            if len(inherited_users) > 20:
-                typer.echo(f"    ... and {len(inherited_users) - 20} more")
+        for u in direct_users:
+            typer.echo(f"    {u} (directly assigned)")
+        for u in inherited_users[:20]:
+            typer.echo(f"    {u} (inherited)")
+        if len(inherited_users) > 20:
+            typer.echo(f"    ... and {len(inherited_users) - 20} more")
     else:
         typer.echo("  No users currently hold this role.")
 
@@ -705,8 +611,7 @@ def _cmd_scan(ctx: SnowglobeContext, args: list):
     """Scan all roles for privilege escalation paths to admin roles."""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
-    from snowglobe.state.db import StateDB
-    import json
+    from snowglobe.core.risk_service import RiskService
 
     # Parse flags
     csv_path = None
@@ -717,110 +622,39 @@ def _cmd_scan(ctx: SnowglobeContext, args: list):
         elif a == "--json" and i + 1 < len(args):
             json_path = args[i + 1]
 
-    targets = _get_privileged_targets(ctx)
-    all_roles = ctx.role_graph.all_roles()
+    risk_service = RiskService(ctx)
 
-    # Classify roles
-    flagged = []
-    no_path = []
-    is_admin = []
-
+    n_roles = len(ctx.role_graph.all_roles())
     typer.echo("")
     typer.secho("Privilege Escalation Scan", fg=typer.colors.CYAN, bold=True)
     typer.echo("─" * 50)
-    typer.echo(f"Scanning {len(all_roles)} roles against {len(targets)} privileged targets...")
+    typer.echo(f"Scanning {n_roles} roles...")
     typer.echo("")
 
-    for role in sorted(all_roles):
-        if role in targets:
-            is_admin.append(role)
-            continue
-
-        ancestors = ctx.role_graph.all_ancestors(role)
-        reachable = ancestors & targets
-
-        if not reachable:
-            no_path.append(role)
-            continue
-
-        # Find shortest path to best (highest-weight) target
-        best_path = None
-        best_target = None
-        for target in reachable:
-            path = ctx.role_graph.shortest_path(role, target)
-            if path and (best_path is None or len(path) < len(best_path)):
-                best_path = path
-                best_target = target
-
-        if best_path:
-            hops = len(best_path) - 1
-            # Count users who hold this role
-            user_count = 0
-            for user, assigned in ctx.user_graph.assigned_roles.items():
-                if role in assigned:
-                    user_count += 1
-                else:
-                    effective = set(assigned)
-                    for r in assigned:
-                        effective |= ctx.role_graph.all_ancestors(r)
-                    if role in effective:
-                        user_count += 1
-
-            risk_score = _calculate_risk_score(hops, user_count, best_target)
-            flagged.append({
-                "role": role,
-                "target": best_target,
-                "hops": hops,
-                "path": best_path,
-                "user_count": user_count,
-                "risk_score": risk_score,
-            })
-
-    # Sort by risk score descending
-    flagged.sort(key=lambda e: e["risk_score"], reverse=True)
+    result = risk_service.run_scan(ctx.role_graph, ctx.user_graph)
 
     # --- Diff with previous scan ---
-    db = StateDB()
-    previous_raw = db.get_json_cache("scan_results_last")
-    diff_text = ""
-    if previous_raw:
-        prev_roles = {r["role"] for r in previous_raw}
-        curr_roles = {r["role"] for r in flagged}
-        new_risks = curr_roles - prev_roles
-        resolved = prev_roles - curr_roles
-        if new_risks or resolved:
+    diff = result["diff"]
+    if diff is not None:
+        if diff["new"] or diff["resolved"]:
             parts = []
-            if new_risks:
-                parts.append(f"+{len(new_risks)} new")
-            if resolved:
-                parts.append(f"-{len(resolved)} resolved")
-            diff_text = f"  Changes since last scan: {', '.join(parts)}"
-
-    # Save current results for next diff
-    db.set_json_cache("scan_results_last", [
-        {"role": e["role"], "target": e["target"], "hops": e["hops"],
-         "risk_score": e["risk_score"], "user_count": e["user_count"]}
-        for e in flagged
-    ])
-
-    # --- Display diff ---
-    if diff_text:
-        typer.secho(diff_text, fg=typer.colors.MAGENTA, bold=True)
-        if previous_raw:
-            prev_roles_set = {r["role"] for r in previous_raw}
-            new_risks_list = [e for e in flagged if e["role"] not in prev_roles_set]
-            if new_risks_list:
+            if diff["new"]:
+                parts.append(f"+{len(diff['new'])} new")
+            if diff["resolved"]:
+                parts.append(f"-{len(diff['resolved'])} resolved")
+            typer.secho(f"  Changes since last scan: {', '.join(parts)}", fg=typer.colors.MAGENTA, bold=True)
+            if diff.get("new_details"):
                 typer.echo("")
                 typer.secho("  NEW risks:", fg=typer.colors.RED)
-                for e in new_risks_list[:5]:
+                for e in diff["new_details"][:5]:
                     typer.echo(f"    {e['role']} → {e['target']} (score={e['risk_score']})")
-        typer.echo("")
-    elif previous_raw:
-        typer.secho("  No changes since last scan.", fg=typer.colors.GREEN)
-        typer.echo("")
+            typer.echo("")
+        else:
+            typer.secho("  No changes since last scan.", fg=typer.colors.GREEN)
+            typer.echo("")
 
-    # --- Direct privilege risks (hierarchy-independent) ---
-    dangerous_grants = _get_dangerous_direct_grants()
+    # --- Direct privilege risks ---
+    dangerous_grants = result["dangerous_grants"]
     if dangerous_grants:
         typer.secho(f"Direct Privilege Risks ({len(dangerous_grants)} grants):", fg=typer.colors.RED, bold=True)
         typer.echo("")
@@ -831,9 +665,8 @@ def _cmd_scan(ctx: SnowglobeContext, args: list):
         typer.echo("")
 
     # --- Flagged roles by risk score ---
-    high_risk = [e for e in flagged if e["risk_score"] >= 10]
-    medium_risk = [e for e in flagged if 5 <= e["risk_score"] < 10]
-    low_risk = [e for e in flagged if e["risk_score"] < 5]
+    high_risk = result["high_risk"]
+    medium_risk = result["medium_risk"]
 
     if high_risk:
         typer.secho(f"HIGH RISK — {len(high_risk)} roles (score ≥ 10):", fg=typer.colors.RED, bold=True)
@@ -858,44 +691,9 @@ def _cmd_scan(ctx: SnowglobeContext, args: list):
             )
         typer.echo("")
 
-    # --- Dormant risk detection ---
-    dormant_users = []
-    try:
-        conn = ctx.connect() if hasattr(ctx, 'connect') else None
-        if conn is None:
-            from snowglobe.cli.context import SnowglobeContext as _Ctx
-            ctx_fresh = _Ctx(profile_name=ctx.profile_name)
-            ctx_fresh.load_profile()
-            conn = ctx_fresh.connect()
-        with conn:
-            rows = conn.query("""
-                SELECT NAME, LAST_SUCCESS_LOGIN
-                FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
-                WHERE (LAST_SUCCESS_LOGIN < DATEADD(day, -90, CURRENT_TIMESTAMP())
-                       OR LAST_SUCCESS_LOGIN IS NULL)
-                  AND DELETED_ON IS NULL
-                  AND DISABLED = 'false'
-            """)
-        dormant_names = {row["NAME"] for row in rows}
-
-        # Cross-reference with flagged roles
-        for entry in flagged:
-            role = entry["role"]
-            for user, assigned in ctx.user_graph.assigned_roles.items():
-                if user in dormant_names:
-                    if role in assigned:
-                        dormant_users.append({"user": user, "role": role, "risk_score": entry["risk_score"]})
-                    else:
-                        effective = set(assigned)
-                        for r in assigned:
-                            effective |= ctx.role_graph.all_ancestors(r)
-                        if role in effective:
-                            dormant_users.append({"user": user, "role": role, "risk_score": entry["risk_score"]})
-    except Exception:
-        pass  # Login history unavailable
-
+    # --- Dormant users ---
+    dormant_users = result["dormant_users"]
     if dormant_users:
-        # Deduplicate by user
         seen = set()
         unique_dormant = []
         for d in sorted(dormant_users, key=lambda x: x["risk_score"], reverse=True):
@@ -912,55 +710,29 @@ def _cmd_scan(ctx: SnowglobeContext, args: list):
         typer.echo("")
 
     # --- Summary ---
+    s = result["summary"]
     typer.secho("Summary:", fg=typer.colors.CYAN)
-    typer.echo(f"  Privileged roles (admin):      {len(is_admin)}")
-    typer.echo(f"  High risk (score ≥ 10):        {len(high_risk)}")
-    typer.echo(f"  Medium risk (score 5-10):      {len(medium_risk)}")
-    typer.echo(f"  Low risk (score < 5):          {len(low_risk)}")
-    typer.echo(f"  No escalation path:            {len(no_path)}")
-    typer.echo(f"  Direct privilege risks:        {len(dangerous_grants)}")
-    if dormant_users:
-        typer.echo(f"  Dormant users with risk:       {len(set(d['user'] for d in dormant_users))}")
-    typer.echo(f"  Total roles scanned:           {len(all_roles)}")
+    typer.echo(f"  Privileged roles (admin):      {s['admin_roles']}")
+    typer.echo(f"  High risk (score ≥ 10):        {s['high_risk']}")
+    typer.echo(f"  Medium risk (score 5-10):      {s['medium_risk']}")
+    typer.echo(f"  Low risk (score < 5):          {s['low_risk']}")
+    typer.echo(f"  No escalation path:            {s['no_path']}")
+    typer.echo(f"  Direct privilege risks:        {s['direct_privilege_risks']}")
+    if s["dormant_with_risk"]:
+        typer.echo(f"  Dormant users with risk:       {s['dormant_with_risk']}")
+    typer.echo(f"  Total roles scanned:           {s['total_scanned']}")
 
     # --- Export ---
     if csv_path:
-        import csv
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["role", "target", "hops", "risk_score", "user_count", "path"])
-            writer.writeheader()
-            for entry in flagged:
-                writer.writerow({
-                    "role": entry["role"],
-                    "target": entry["target"],
-                    "hops": entry["hops"],
-                    "risk_score": entry["risk_score"],
-                    "user_count": entry["user_count"],
-                    "path": " → ".join(entry["path"]),
-                })
+        risk_service.export_scan_csv(result["flagged"], csv_path)
         typer.secho(f"\n  Exported CSV: {csv_path}", fg=typer.colors.GREEN)
 
     if json_path:
-        export_data = {
-            "scan_date": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-            "flagged_roles": flagged,
-            "direct_privilege_risks": dangerous_grants,
-            "dormant_users": dormant_users[:50] if dormant_users else [],
-            "summary": {
-                "admin_roles": len(is_admin),
-                "high_risk": len(high_risk),
-                "medium_risk": len(medium_risk),
-                "low_risk": len(low_risk),
-                "no_path": len(no_path),
-                "total_scanned": len(all_roles),
-            },
-        }
-        from pathlib import Path
-        Path(json_path).write_text(json.dumps(export_data, indent=2, default=str))
+        risk_service.export_scan_json(result, json_path)
         typer.secho(f"  Exported JSON: {json_path}", fg=typer.colors.GREEN)
 
     # --- Drill-down ---
-    if flagged:
+    if high_risk or medium_risk:
         typer.echo("")
         session = PromptSession()
         choices = [str(i) for i in range(1, len(high_risk) + len(medium_risk) + 1)]
