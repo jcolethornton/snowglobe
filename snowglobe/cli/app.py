@@ -42,6 +42,64 @@ def refresh(
     typer.secho("Done.", fg=typer.colors.GREEN, bold=True)
 
 
+def _launch_tui(context, *, vim_flag: bool = False, fallback_to_shell: bool = False) -> None:
+    """
+    Start the Textual TUI.
+
+    If `fallback_to_shell=True` and Textual isn't installed, drop into the
+    REPL shell instead with a one-line notice. Used by the default
+    `snowglobe` (no-args) path so users without the TUI extra still get
+    something useful. The explicit `snowglobe tui` subcommand passes
+    `fallback_to_shell=False` and exits with an error if Textual is missing.
+    """
+    try:
+        from snowglobe.tui.app import SnowglobeApp, VimSnowglobeApp
+    except ImportError as e:
+        if "textual" in str(e).lower():
+            if fallback_to_shell:
+                typer.secho(
+                    "TUI not available (install with: pip install 'snowglobe[tui]'). "
+                    "Falling back to the REPL shell.",
+                    fg=typer.colors.YELLOW,
+                )
+                from snowglobe.cli.shell import start_shell
+                start_shell(context)
+                return
+            typer.secho(
+                "TUI requires the 'textual' package. Install with:\n"
+                "  pip install 'snowglobe[tui]'   (or)   pip install textual",
+                fg=typer.colors.YELLOW,
+            )
+            raise typer.Exit(1)
+        raise
+
+    # CLI flag wins; otherwise inherit from the active profile's `vim: true`.
+    profile_vim = bool((context.profile or {}).get("vim", False)) if context.profile else False
+    context.vim_mode = vim_flag or profile_vim
+
+    app_cls = VimSnowglobeApp if context.vim_mode else SnowglobeApp
+    app_cls(context=context).run()
+
+
+@app.command()
+def tui(
+    ctx: typer.Context,
+    vim: bool = typer.Option(
+        False, "--vim",
+        help="Enable vim-style navigation (j/k/h/l/g/G/Ctrl-d/Ctrl-u + Esc blurs inputs).",
+    ),
+):
+    """Launch the rich Textual-based TUI (same as running `snowglobe` with no command)."""
+    _launch_tui(ctx.obj, vim_flag=vim, fallback_to_shell=False)
+
+
+@app.command()
+def shell(ctx: typer.Context):
+    """Launch the interactive REPL shell (the prompt_toolkit fuzzy-completion REPL)."""
+    from snowglobe.cli.shell import start_shell
+    start_shell(ctx.obj)
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -71,7 +129,9 @@ def main(
     Inspect and understand Snowflake cost, access, and ownership.
 
     Snowglobe is read-only by design.
-    Run without a command to start the interactive shell.
+
+    Run without a command to launch the TUI.
+    Use `snowglobe shell` for the REPL shell, or any subcommand for headless use.
     """
     context = SnowglobeContext(
         profile_name=profile_name,
@@ -82,7 +142,7 @@ def main(
     context.load_profile()
     ctx.obj = context
 
-    # No subcommand → launch interactive shell
+    # No subcommand → launch the TUI (falling back to the REPL shell
+    # if the optional Textual dependency isn't installed).
     if ctx.invoked_subcommand is None:
-        from snowglobe.cli.shell import start_shell
-        start_shell(context)
+        _launch_tui(context, vim_flag=False, fallback_to_shell=True)
