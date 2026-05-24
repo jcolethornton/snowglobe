@@ -26,6 +26,8 @@ class SnowglobeContext:
     object_index: Optional[Dict[str, List[str]]] = None
 
     def load_profile(self):
+        if self.profile is not None:
+            return
         config = SnowglobeConfig()
         self.profile = config.get_profile(self.profile_name)
         if self.role:
