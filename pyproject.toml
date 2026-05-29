@@ -3,7 +3,7 @@ name = "snowglobe"
 version = "0.1.0"
 description = "Explainable cost and access visibility for Snowflake"
 readme = "README.md"
-requires-python = ">=3.12.3,<4.0"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [
     { name = "Jaryd Thornton", email = "jaryd90@gmail.com" }
@@ -21,7 +21,6 @@ dependencies = [
     "sqlglot==27.1.0",
     "typer==0.16.0",
     "typing_extensions==4.14.1",
-    "sqlglot"
 ]
 
 [project.optional-dependencies]

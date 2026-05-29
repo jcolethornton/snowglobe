@@ -1,28 +1,39 @@
 # Default profile — everyday analyst usage
 default:
-  user: "analyst_user"          # Snowflake username
-  password: "replace_me"        # Password or key-pair path
   account: "your_account"       # e.g., abc123.us-east-1
+  user: "analyst_user"          # Snowflake username
   role: "ANALYST"               # Default role to assume
   warehouse: "COMPUTE_WH"       # Default warehouse
 
-# Production profile — for admins or power users
+  # Auth — use one of the following:
+  password: "replace_me"                    # password auth
+  # private_key_path: "~/.ssh/snowflake.p8" # key-pair auth (recommended for production)
+  # private_key_pwd: "passphrase"           # key passphrase, if the key is encrypted
+
+  # Optional:
+  # vim: true                               # enable vim navigation in the TUI by default
+  # cortex_model: "claude-haiku-4-5"       # Cortex AI model for the query optimiser
+
+# Production profile — key-pair auth example
 prod:
-  user: "admin_user"
-  password: "replace_me"
   account: "your_account"
+  user: "admin_user"
   role: "SYSADMIN"
   warehouse: "ETL_WH"
+  private_key_path: "~/.ssh/snowflake_prod.p8"
+  # private_key_pwd: "${SNOWFLAKE_KEY_PWD}" # environment variables are expanded
 
-# Optional: sandbox / test profile
+# Sandbox / test profile
 sandbox:
-  user: "sandbox_user"
-  password: "replace_me"
   account: "your_account"
+  user: "sandbox_user"
   role: "DEV_ROLE"
   warehouse: "TEST_WH"
+  password: "${SNOWFLAKE_SANDBOX_PASSWORD}"  # environment variables are expanded
 
 # Notes:
-# - You can add more profiles for different accounts or roles.
-# - Snowflake key-pair auth for production.
-# - Profiles are selected with --profile <name> CLI flag.
+# - Select a profile with: snowglobe --profile <name>
+# - Key-pair auth is recommended for production and CI environments.
+# - All string values support environment variable expansion: ${VAR_NAME}
+# - Your role needs IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE to use Snowglobe.
+#   Grant it with: GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <your_role>;

@@ -2,9 +2,15 @@
   <img src="assets/logo.svg" alt="Snowglobe" width="600"/>
 </p>
 
-# Snowglobe
+<p align="center">
+  <a href="https://pypi.org/project/snowglobe/"><img src="https://img.shields.io/pypi/v/snowglobe" alt="PyPI version"/></a>
+  <a href="https://pypi.org/project/snowglobe/"><img src="https://img.shields.io/pypi/pyversions/snowglobe" alt="Python versions"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"/></a>
+</p>
 
-**Explainable cost and access visibility for Snowflake — read-only by design.**
+<p align="center">
+  <strong>Explainable cost and access visibility for Snowflake — read-only by design.</strong>
+</p>
 
 Snowglobe helps analytics, data platform, and security teams answer three questions about their Snowflake account:
 
@@ -12,7 +18,25 @@ Snowglobe helps analytics, data platform, and security teams answer three questi
 2. **Who owns and can access what?**
 3. **Who is responsible when cost or access looks wrong?**
 
-It observes, explains, and recommends.
+It observes, explains, and recommends — and it never writes to your account.
+
+---
+
+## Table of contents
+
+- [Three ways to use it](#three-ways-to-use-it)
+- [Installation](#installation)
+- [Requirements](#requirements)
+- [Configuration](#configuration)
+- [Quickstart](#quickstart)
+- [Features](#features)
+- [The TUI](#the-tui)
+- [The interactive shell](#the-interactive-shell)
+- [Headless CLI](#headless-cli)
+- [Security](#security)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
@@ -25,6 +49,94 @@ It observes, explains, and recommends.
 | **Headless CLI** | `snowglobe <subcommand>` | CI, cron jobs, scripts, piping into other tools. Outputs `table`, `json`, or `csv` per command. |
 
 All three share the same local SQLite cache and the same service layer, so anything you do in one is reflected in the others.
+
+---
+
+## Installation
+
+```bash
+pip install 'snowglobe[tui]'        # includes the Textual TUI (recommended)
+pip install snowglobe               # CLI + shell only, no Textual dependency
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/jcolethornton/snowglobe.git
+cd snowglobe
+pip install -e '.[tui]'
+```
+
+---
+
+## Requirements
+
+- Python **3.12+**
+- A Snowflake account
+- A Snowflake role with `IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` (grants read access to `ACCOUNT_USAGE`)
+- Optionally: `IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` for `ORGANIZATION_USAGE` to get your contracted storage rate
+
+**Grant access if needed:**
+```sql
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <your_role>;
+```
+
+---
+
+## Configuration
+
+Snowglobe loads connection profiles from `~/.snowglobe/config.yaml`. Multiple profiles are supported and selected with `--profile <name>`.
+
+```yaml
+# ~/.snowglobe/config.yaml
+
+default:
+  account: "abc123.us-east-1"
+  user: "jdoe@example.com"
+  role: "ANALYST"
+  warehouse: "ANALYTICS_WH"
+
+  # Auth — choose one:
+  password: "hunter2"                        # password auth
+  # private_key_path: "~/.ssh/snowflake.p8" # key-pair auth
+  # private_key_pwd: "passphrase"           # key passphrase (if encrypted)
+
+  # Optional settings:
+  vim: true                                  # enable vim navigation in the TUI
+  cortex_model: "claude-haiku-4-5"          # Cortex AI model for query optimiser
+
+prod:
+  account: "abc123.us-east-1"
+  user: "admin_user"
+  password: "${SNOWFLAKE_PROD_PASSWORD}"     # environment variables are expanded
+  role: "SYSADMIN"
+  warehouse: "ETL_WH"
+```
+
+---
+
+## Quickstart
+
+```bash
+# 1. Populate the local SQLite cache from Snowflake
+snowglobe refresh
+
+# 2. Launch the TUI (the default)
+snowglobe
+
+# Or explicitly, with vim-style navigation
+snowglobe tui --vim
+
+# Drop into the REPL shell instead
+snowglobe shell
+
+# Headless commands
+snowglobe access check --user jdoe --object-type TABLE \
+  --object-name MY_DB.PUBLIC.ORDERS --privilege SELECT
+snowglobe cost summary --days 30
+snowglobe optimize query --query-id <query_id>
+snowglobe report full --days 30 --output report.md
+```
 
 ---
 
@@ -42,7 +154,7 @@ All three share the same local SQLite cache and the same service layer, so anyth
 
 ### Risk & privilege escalation
 
-- **Escalation scan** — Walk every role in the account, find paths to admin roles (ACCOUNTADMIN, SYSADMIN, SECURITYADMIN, USERADMIN, or any role with `MANAGE GRANTS` / DB OWNERSHIP / IMPORTED PRIVILEGES on SNOWFLAKE), and score each path with a composite risk score (target weight × inverse hops × log of user count).
+- **Escalation scan** — Walk every role in the account, find paths to admin roles (ACCOUNTADMIN, SYSADMIN, SECURITYADMIN, USERADMIN, or any role with `MANAGE GRANTS` / DB OWNERSHIP / `IMPORTED PRIVILEGES ON SNOWFLAKE`), and score each path with a composite risk score (target weight × inverse hops × log of user count).
 - **Single-role escalation check** — Pick one role and see exactly which admin targets it can reach and through which chain.
 - **Dormant escalation risks** — Cross-references inactive users (no successful login in 90 days) against risk-bearing roles.
 - **Direct privilege risks** — Roles with dangerous account-level grants that bypass the role graph entirely.
@@ -50,17 +162,18 @@ All three share the same local SQLite cache and the same service layer, so anyth
 
 ### Cost & query attribution
 
-- **12 cost views** — Account summary, daily trend with rolling average, top expensive queries, per-warehouse, per-user (warehouse + Cortex AI), AI services (Cortex Functions / Analyst / Agent / Code, Snowflake Intelligence), services (pipes / tasks / SPCS / auto-clustering / search optimisation), per-DB storage with monthly cost estimate at your contracted or on-demand rate, replication, materialized-view refresh costs, and Snowflake-native budget status.
-- **Real query attribution** — Uses `QUERY_ATTRIBUTION_HISTORY.CREDITS_ATTRIBUTED_COMPUTE` for per-query credit cost (Snowflake's own attribution, not an estimate).
+- **12 cost views** — Account summary, daily trend with rolling average, top expensive queries, per-warehouse, per-user (warehouse + Cortex AI), AI services (Cortex Functions / Analyst / Agent / Code / Snowflake Intelligence), services (pipes / tasks / SPCS / auto-clustering / search optimisation), per-DB storage with monthly cost estimate, replication, materialized-view refresh costs, and Snowflake-native budget status.
+- **Real query attribution** — Uses `QUERY_ATTRIBUTION_HISTORY.CREDITS_ATTRIBUTED_COMPUTE` for per-query credit cost where available; falls back gracefully to `QUERY_HISTORY` with a clear note.
+- **Cortex AI cost tracking** — Each Cortex view is queried individually so accounts without certain features still get partial data rather than a crash.
 - **1-hour TTL local cache** — Cost views are cached in SQLite so repeated visits within the hour are instant; `Re-fetch` forces a fresh Snowflake call.
-- **Drill-downs** — Click a warehouse for its daily trend; click a user for their per-warehouse credit breakdown; click a service-type summary row for its day-by-day spend; click a top query to load it into the Tune screen.
+- **Drill-downs** — Click a warehouse for its daily trend; click a user for their per-warehouse credit breakdown; click a top query to load it into the Tune screen.
 
 ### Query optimiser
 
 - **Eight heuristic detectors** over `GET_QUERY_OPERATOR_STATS` — join explosion, disk spill, pruning failure, cartesian joins, large scans, large window functions, large aggregations, heavy network shuffle.
 - **Snowflake-native insights** from `QUERY_INSIGHTS` (where available).
 - **Operator tree** with per-operator score and time percentage.
-- **Cortex AI suggestions** — opt-in Cortex `AI_COMPLETE` call (default model: `claude-haiku-4-5`) that takes the SQL + heuristic findings + cost attribution and produces a narrative optimisation recommendation.
+- **Cortex AI suggestions** — opt-in `AI_COMPLETE` call that takes the SQL + heuristic findings + cost attribution and produces a narrative optimisation recommendation. Model is configurable per profile (`cortex_model` in config); defaults to `claude-haiku-4-5`.
 
 ### Reports
 
@@ -71,101 +184,19 @@ All three share the same local SQLite cache and the same service layer, so anyth
 
 ### Local SQLite cache
 
-- All grants, role edges, and user assignments cached locally for quick lookups.
+- All grants, role edges, and user assignments cached locally for instant lookups.
 - **Incremental refresh** — uses `MODIFIED_ON` / `DELETED_ON` watermarks to fetch only changed rows.
 - Cost data uses a 1-hour TTL in the same SQLite store.
 
 ---
 
-## Installation
-
-```bash
-pip install 'snowglobe[tui]'        # includes the Textual TUI
-```
-
-Or from source:
-
-```bash
-git clone https://github.com/jcolethornton/snowglobe.git
-cd snowglobe
-pip install -e '.[tui]'
-```
-
-If you don't want the TUI:
-
-```bash
-pip install snowglobe               # CLI + shell only, no Textual dependency
-```
-
----
-
-## Requirements
-
-- Python **3.12.3+**
-- A Snowflake account
-- A Snowflake role with read access to `SNOWFLAKE.ACCOUNT_USAGE` (and optionally `SNOWFLAKE.ORGANIZATION_USAGE.RATE_SHEET_DAILY` for accurate storage cost)
-
----
-
-## Configuration
-
-Snowglobe loads connection profiles from `~/.snowglobe/config.yaml`. Multiple profiles are supported and selected with `--profile <name>`.
-
-```yaml
-# ~/.snowglobe/config.yaml
-
-default:
-  account: "abc123.us-east-1"
-  user: "jdoe@example.com"
-  password: "/path/to/snowflake_key.p8"   # key-pair path, or an inline password
-  role: "ANALYST"
-  warehouse: "ANALYTICS_WH"
-  vim: true                                # optional — enable vim navigation by default
-
-prod:
-  account: "abc123.us-east-1"
-  user: "admin_user"
-  password: "${SNOWFLAKE_PROD_PASSWORD}"   # environment variables are expanded
-  role: "SYSADMIN"
-  warehouse: "ETL_WH"
-```
-
-Supported auth: password, key-pair (point `password:` at the `.p8` file).
-
----
-
-## Quickstart
-
-```bash
-# First run — populate the local SQLite cache from Snowflake
-snowglobe refresh
-
-# Launch the TUI (the default)
-snowglobe
-
-# Or explicitly, with vim-style navigation
-snowglobe tui --vim
-
-# Drop into the REPL shell instead
-snowglobe shell
-
-# Or fire individual headless commands
-snowglobe access check --user jdoe --object-type TABLE \
-  --object-name MY_DB.PUBLIC.ORDERS --privilege SELECT
-snowglobe cost summary --days 30
-snowglobe optimize query --query-id <query_id>
-snowglobe report full --days 30 --output report.md
-```
-
----
-
 ## The TUI
 
-`snowglobe` (or the explicit `snowglobe tui`) opens a full-screen Textual app. Persistent header at top (profile / role / cache age), nav sidebar on the left, footer with active keybindings at the bottom.
+`snowglobe` (or `snowglobe tui`) opens a full-screen Textual app. Persistent header at the top (profile / role / cache age), nav sidebar on the left, footer with active keybindings at the bottom.
 
 ### Screens
 
-Number keys `1`-`7` jump directly:
+Number keys `1`–`7` jump directly:
 
 | # | Screen | What's on it |
 |---|---|---|
@@ -173,7 +204,7 @@ Number keys `1`-`7` jump directly:
 | **2** | **Access** | Seven tabs: Check / Who-access / Create / Roles / Members / Path / Drift. Object-type aware privilege filtering. |
 | **3** | **Risk** | Five tabs: Scan / Escalation / Dormant / Direct grants / Unused. Re-scan + CSV / JSON export. |
 | **4** | **Cost** | All twelve cost views in one place. Window selector (7d / 30d / 90d), Re-fetch button, drill-downs into per-warehouse / per-user / per-service trends. |
-| **5** | **Tune** | Query optimiser. Three-pane: SQL with syntax highlighting on the left; Heuristics / Native insights / Operator tree / Expensive ops / AI on the right. |
+| **5** | **Tune** | Query optimiser. Three-pane: SQL with syntax highlighting; Heuristics / Native insights / Operator tree / Expensive ops / AI on the right. |
 | **6** | **Reports** | Generate Full / Cost-only / User-access reports with live markdown preview + Save. |
 | **7** | **Refresh** | State counts, refresh actions, connection diagnostics, streaming log. |
 
@@ -185,7 +216,7 @@ Number keys `1`-`7` jump directly:
 | `Enter` | Activate (button press, fire query, open Select dropdown, expand tree node) |
 | `↑` / `↓` | Navigate within lists / tables / dropdowns / trees |
 | `Esc` | Close drill-downs / cancel running workers / blur input (vim mode) |
-| `1`-`7` | Jump to screen by number |
+| `1`–`7` | Jump to screen by number |
 | `Ctrl-P` | Command palette (switch themes, change profile, etc.) |
 | `q` | Quit |
 
@@ -199,21 +230,19 @@ Pass `--vim` or set `vim: true` in your profile config:
 | `g` / `G` | Top / bottom | Same |
 | `h` / `l` | Collapse / expand | Tree nodes |
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up | Any scrollable |
-| `Esc` | Blur the focused Input | Lets `j`/`k` navigate again after typing |
+| `Esc` | Blur the focused input | Lets `j`/`k` navigate again after typing |
 
-Typing characters into form fields still works as expected — Input widgets consume keypresses before the vim bindings fire.
+Typing into form fields works as expected — Input widgets consume keypresses before vim bindings fire.
 
 ### Themes
 
 Two branded themes ship with the app: `snowglobe-dark` (default) and `snowglobe-light`. Open the command palette with **`Ctrl-P`**, type `theme`, and pick any — Textual's built-ins (`nord`, `monokai`, `dracula`, `catppuccin-*`, etc.) are also listed.
 
-To customise colours directly, edit `snowglobe/tui/styles.tcss` (uses Textual CSS variables — `$primary`, `$accent`, `$background`, etc.).
-
 ---
 
 ## The interactive shell
 
-`snowglobe shell` drops you into the REPL. All commands support fuzzy tab-completion on usernames, roles, and object FQNs.
+`snowglobe shell` drops you into a REPL with fuzzy tab-completion on usernames, roles, and object FQNs.
 
 | Command | Description |
 |---|---|
@@ -245,8 +274,8 @@ For CI, cron, and scripts. Output formats: `--output table|json` plus per-comman
 
 | Command | Description |
 |---|---|
-| `snowglobe` (no args) | Launch the TUI (the default; falls back to `shell` if Textual isn't installed) |
-| `snowglobe tui [--vim]` | Launch the TUI explicitly (errors out if Textual isn't installed) |
+| `snowglobe` | Launch the TUI (falls back to `shell` if Textual isn't installed) |
+| `snowglobe tui [--vim]` | Launch the TUI explicitly |
 | `snowglobe shell` | Launch the REPL shell |
 | `snowglobe refresh [--full]` | Incremental (default) or full state refresh |
 | `snowglobe debug` | Connection diagnostics (eight-step checklist) |
@@ -259,7 +288,7 @@ For CI, cron, and scripts. Output formats: `--output table|json` plus per-comman
 | `snowglobe cost ai` | AI/ML token costs by service |
 | `snowglobe cost ai-users` | AI costs per user with service split |
 | `snowglobe cost queries` | Top expensive queries by credits or bytes |
-| `snowglobe cost trend` | Daily spend trend with Δ % and rolling 7-day average |
+| `snowglobe cost trend` | Daily spend trend with Δ% and rolling 7-day average |
 | `snowglobe cost storage` | Per-DB storage with estimated monthly cost |
 | `snowglobe cost services` | Pipes / serverless tasks / SPCS / clustering / search optimisation |
 | `snowglobe cost budget` | Snowflake-native budget status |
@@ -275,7 +304,7 @@ For CI, cron, and scripts. Output formats: `--output table|json` plus per-comman
 
 - `--profile <name>` — connection profile (default: `default`)
 - `--role <name>` — override the role from the profile
-- `--output table|json` — output format (per-command `--csv <path>` also available where it makes sense)
+- `--output table|json` — output format
 - `--verbose` / `-v` — verbose output
 
 ---
@@ -285,10 +314,10 @@ For CI, cron, and scripts. Output formats: `--output table|json` plus per-comman
 Snowglobe is **read-only by design** — its guiding principle is that it earns trust by never touching production state.
 
 - The Snowflake connection layer actively blocks `CREATE`, `ALTER`, `DROP`, `GRANT`, `REVOKE`, and `TRUNCATE` statements before they reach Snowflake.
-- All metadata is fetched via bulk queries against `SNOWFLAKE.ACCOUNT_USAGE` (and `ORGANIZATION_USAGE.RATE_SHEET_DAILY` if available, for accurate storage rates).
-- All data stays in your environment. No telemetry, no callbacks.
+- All metadata is fetched via bulk queries against `SNOWFLAKE.ACCOUNT_USAGE` (and `ORGANIZATION_USAGE.RATE_SHEET_DAILY` if available).
+- All data stays in your environment. No telemetry, no callbacks, no external requests.
 - Credentials are read from the local config file and never logged.
-- Cortex AI calls run inside your Snowflake account via `AI_COMPLETE`; the SQL and operator stats never leave Snowflake.
+- Cortex AI calls run inside your Snowflake account via `AI_COMPLETE` — the SQL and operator stats never leave Snowflake.
 
 ---
 
@@ -296,6 +325,8 @@ Snowglobe is **read-only by design** — its guiding principle is that it earns 
 
 - **`ACCOUNT_USAGE` has up to ~45 minutes of latency** — very recent grant or query changes won't appear until the next refresh.
 - **STREAMLIT, NOTEBOOK, DYNAMIC TABLE, ALERT, TAG, SECRET** grants aren't in `GRANTS_TO_ROLES`; Snowglobe falls back to live `SHOW GRANTS ON` for those types (slower, but works).
+- **Query Attribution** (`QUERY_ATTRIBUTION_HISTORY`) requires Snowflake's Query Attribution feature, which is not available on Standard tier or older accounts. Snowglobe falls back to `QUERY_HISTORY` with a note in the UI.
+- **Cortex AI views** are not available in all Snowflake regions or tiers. Snowglobe queries each view independently and silently skips missing ones.
 
 ---
 
@@ -307,4 +338,4 @@ Pull requests and issues are welcome on [GitHub](https://github.com/jcolethornto
 
 ## License
 
-Apache-2.0 © 2025 Jaryd Thornton. See `LICENSE` for the full text.
+Apache-2.0 © 2026 Jaryd Thornton. See `LICENSE` for the full text.
