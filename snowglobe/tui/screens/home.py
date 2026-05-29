@@ -54,8 +54,8 @@ class HomeScreen(Vertical):
                     "[a]  Access check\n"
                     "[w]  Who-access\n"
                     "[c]  Cost\n"
-                    "[s]  Risk scan\n"
-                    "[r]  Refresh\n",
+                    "\\[s]  Risk scan\n"
+                    "\\[r]  Refresh\n",
                     classes="actions-list",
                 )
             with Vertical(id="home-queries", classes="panel"):
