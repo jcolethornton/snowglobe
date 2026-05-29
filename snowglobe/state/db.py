@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS cost_snapshots (
     snapshot_date TEXT NOT NULL,
     service_type TEXT NOT NULL,
     credits REAL NOT NULL,
+    days_active INTEGER DEFAULT 0,
     PRIMARY KEY (snapshot_date, service_type)
 );
 
@@ -405,8 +406,8 @@ class StateDB:
         conn.execute("DELETE FROM cost_snapshots WHERE snapshot_date = ?", (date,))
         for row in rows:
             conn.execute(
-                "INSERT INTO cost_snapshots (snapshot_date, service_type, credits) VALUES (?, ?, ?)",
-                (date, row["SERVICE_TYPE"], float(row["CREDITS"])),
+                "INSERT INTO cost_snapshots (snapshot_date, service_type, credits, days_active) VALUES (?, ?, ?, ?)",
+                (date, row["SERVICE_TYPE"], float(row["CREDITS"]), int(row.get("DAYS_ACTIVE", 0))),
             )
         conn.commit()
 
@@ -461,7 +462,7 @@ class StateDB:
         from datetime import date
         today = date.today().isoformat()
         rows = self.conn.execute(
-            "SELECT service_type AS SERVICE_TYPE, credits AS CREDITS FROM cost_snapshots WHERE snapshot_date = ?",
+            "SELECT service_type AS SERVICE_TYPE, credits AS CREDITS, days_active AS DAYS_ACTIVE FROM cost_snapshots WHERE snapshot_date = ?",
             (today,),
         ).fetchall()
         if not rows:

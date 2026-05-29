@@ -122,7 +122,6 @@ class CostService:
                 df = df.sort_values("CREDITS", ascending=False).reset_index(drop=True)
                 total = df["CREDITS"].sum()
                 df["PCT"] = (df["CREDITS"] / total * 100).round(1)
-                df["DAYS_ACTIVE"] = ""  # Not stored in cache
                 return df, self._cache_age_minutes(cache_key)
 
         # Cache miss — query Snowflake
