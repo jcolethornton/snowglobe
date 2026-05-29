@@ -58,7 +58,7 @@ def _launch_tui(context, *, vim_flag: bool = False, fallback_to_shell: bool = Fa
         if "textual" in str(e).lower():
             if fallback_to_shell:
                 typer.secho(
-                    "TUI not available (install with: pip install 'snowglobe[tui]'). "
+                    "TUI not available (install with: pip install 'snowglobe-cli[tui]'). "
                     "Falling back to the REPL shell.",
                     fg=typer.colors.YELLOW,
                 )
@@ -67,7 +67,7 @@ def _launch_tui(context, *, vim_flag: bool = False, fallback_to_shell: bool = Fa
                 return
             typer.secho(
                 "TUI requires the 'textual' package. Install with:\n"
-                "  pip install 'snowglobe[tui]'   (or)   pip install textual",
+                "  pip install 'snowglobe-cli[tui]'   (or)   pip install textual",
                 fg=typer.colors.YELLOW,
             )
             raise typer.Exit(1)
