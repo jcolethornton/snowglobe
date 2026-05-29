@@ -12,9 +12,12 @@ score map, but the real engine returns `{key: {"score": ..., "detail": ...,
 have caught it.
 """
 import asyncio
+import pytest
 
 from snowglobe.engines.optimizer.query_optimizer import QueryOptimizerEngine
 from snowglobe.models.query import QueryProfile
+
+pytest.importorskip("textual")
 
 
 def _op(

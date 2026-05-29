@@ -12,7 +12,9 @@ class UserGraph:
         username -> list of directly assigned roles
     """
 
-    def __init__(self, assigned_roles: Dict[str, List[str]] = {}, **args):
+    def __init__(self, assigned_roles: Dict[str, List[str]] | None = None, **args):
+        if assigned_roles is None:
+            assigned_roles = {}
         self.assigned_roles = assigned_roles
         self.exclude_list_raw = args.get('exclude_roles',[])
 
