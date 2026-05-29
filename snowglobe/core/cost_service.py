@@ -10,6 +10,11 @@ from datetime import date, datetime, timezone
 
 from snowglobe.state.db import StateDB
 
+def _sq(value: str) -> str:
+    """Escape a string for embedding in a SQL single-quoted literal."""
+    return value.replace("'", "''")
+
+
 CACHE_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_STORAGE_RATE_PER_TB = 23.0  # On-demand standard rate $/TB/month
 
@@ -664,7 +669,7 @@ class CostService:
         SELECT USAGE_DATE AS DATE,
                ROUND(SUM(CREDITS_BILLED), 2) AS CREDITS
         FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
-        WHERE SERVICE_TYPE = '{service_type}'
+        WHERE SERVICE_TYPE = '{_sq(service_type)}'
           AND USAGE_DATE >= DATEADD(day, -{days}, CURRENT_DATE())
         GROUP BY 1
         ORDER BY 1
@@ -683,7 +688,7 @@ class CostService:
         SELECT DATE_TRUNC('day', START_TIME)::DATE AS DATE,
                ROUND(SUM(CREDITS_USED), 2) AS CREDITS
         FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
-        WHERE WAREHOUSE_NAME = '{warehouse_name}'
+        WHERE WAREHOUSE_NAME = '{_sq(warehouse_name)}'
           AND START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
         GROUP BY 1
         ORDER BY 1

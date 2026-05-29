@@ -14,6 +14,12 @@ def account_role(role: str) -> str:
     return f"ACCOUNT_ROLE::{role}"
 
 
+def _sq(value: str) -> str:
+    """Escape a string for embedding in a SQL single-quoted literal."""
+    return value.replace("'", "''")
+
+
+
 def database_role(db: str, role: str) -> str:
     return f"DATABASE_ROLE::{db}::{role}"
 
@@ -539,7 +545,7 @@ class AccessCollector:
             sql = f"""
             SELECT GRANTED_ON, NAME, TABLE_CATALOG, GRANTEE_NAME
             FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
-            WHERE PRIVILEGE = '{privilege.upper()}'
+            WHERE PRIVILEGE = '{_sq(privilege.upper())}'
               AND DELETED_ON IS NULL
             """
             rows = self.connection.query(sql)
@@ -619,12 +625,12 @@ class AccessCollector:
         parts = object_name.upper().split(".")
         if len(parts) == 3:
             catalog, schema, name = parts
-            name_filter = f"AND TABLE_CATALOG = '{catalog}' AND TABLE_SCHEMA = '{schema}' AND NAME = '{name}'"
+            name_filter = f"AND TABLE_CATALOG = '{_sq(catalog)}' AND TABLE_SCHEMA = '{_sq(schema)}' AND NAME = '{_sq(name)}'"
         elif len(parts) == 2:
             catalog, name = parts
-            name_filter = f"AND TABLE_CATALOG = '{catalog}' AND NAME = '{name}'"
+            name_filter = f"AND TABLE_CATALOG = '{_sq(catalog)}' AND NAME = '{_sq(name)}'"
         else:
-            name_filter = f"AND NAME = '{parts[0]}'"
+            name_filter = f"AND NAME = '{_sq(parts[0])}'"
 
         with self.connection:
             sql = f"""
@@ -638,7 +644,7 @@ class AccessCollector:
                 GRANTED_BY,
                 GRANTED_TO
             FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
-            WHERE GRANTED_ON = '{object_type}'
+            WHERE GRANTED_ON = '{_sq(object_type)}'
               AND DELETED_ON IS NULL
               {name_filter}
             """
