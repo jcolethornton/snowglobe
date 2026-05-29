@@ -13,6 +13,23 @@ from snowglobe.state.db import StateDB
 CACHE_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_STORAGE_RATE_PER_TB = 23.0  # On-demand standard rate $/TB/month
 
+_NOTE_NO_QUERY_ATTRIBUTION = (
+    "Warehouse credits unavailable — Query Attribution is not enabled on this account. "
+    "Showing query counts only. Enable it under Admin → Cost Management → Query Attribution."
+)
+_NOTE_CORTEX_UNAVAILABLE = (
+    "Some Cortex AI features are not available on this account or region — "
+    "affected credits show as 0."
+)
+_NOTE_TOP_QUERIES_NO_CREDITS = (
+    "Query Attribution is not enabled — showing top queries by runtime. "
+    "Credit columns are unavailable."
+)
+_NOTE_USER_DETAIL_NO_CREDITS = (
+    "Query Attribution is not enabled — showing warehouse usage by query count only. "
+    "Credit columns are unavailable."
+)
+
 
 class CostService:
     """Provides cost analysis across all Snowflake cost sources with caching."""
@@ -162,10 +179,135 @@ class CostService:
             self._mark_cached(cache_key)
         return df, None
 
-    def get_user_breakdown(self, days: int = 7, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+    # --- Resilient Cortex / QUERY_ATTRIBUTION_HISTORY helpers ---
+
+    def _query_warehouse_costs(self, conn, days: int) -> tuple[pd.DataFrame, bool]:
         """
-        Complete cost per user — combines real warehouse attributed credits + all AI token costs.
-        Returns (df, cache_age_minutes).
+        Per-user warehouse costs.  Returns (df, credits_available).
+
+        credits_available=True  → QUERY_ATTRIBUTION_HISTORY succeeded; WAREHOUSE_CREDITS
+                                   and QA_CREDITS are real attributed values.
+        credits_available=False → fell back to QUERY_HISTORY; WAREHOUSE_CREDITS and
+                                   QA_CREDITS are 0 (Query Attribution not enabled).
+        """
+        _empty = pd.DataFrame(columns=["USER_NAME", "WAREHOUSE_CREDITS", "QA_CREDITS", "QUERY_COUNT"])
+        try:
+            rows = conn.query(f"""
+                SELECT USER_NAME,
+                       ROUND(SUM(CREDITS_ATTRIBUTED_COMPUTE), 2) AS WAREHOUSE_CREDITS,
+                       ROUND(SUM(COALESCE(CREDITS_USED_QUERY_ACCELERATION, 0)), 2) AS QA_CREDITS,
+                       COUNT(*) AS QUERY_COUNT
+                FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY
+                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                GROUP BY 1
+            """)
+            return (pd.DataFrame(rows) if rows else _empty, True)
+        except Exception:
+            pass
+
+        try:
+            rows = conn.query(f"""
+                SELECT USER_NAME,
+                       0.0 AS WAREHOUSE_CREDITS,
+                       0.0 AS QA_CREDITS,
+                       COUNT(*) AS QUERY_COUNT
+                FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND EXECUTION_STATUS = 'SUCCESS'
+                GROUP BY 1
+            """)
+            return (pd.DataFrame(rows) if rows else _empty, False)
+        except Exception:
+            return (_empty, False)
+
+    def _query_cortex_ai_rows(self, conn, days: int) -> tuple[pd.DataFrame, bool]:
+        """
+        Query every Cortex AI usage view individually.  Returns (df, any_views_missing).
+
+        any_views_missing=True means at least one view raised an exception (view does not
+        exist on this account / tier / region).  The DataFrame contains rows only from
+        views that did respond — it may still be non-empty if some views exist.
+        """
+        sources = [
+            ("Cortex Functions", f"""
+                SELECT u.LOGIN_NAME AS USER_NAME,
+                       'Cortex Functions' AS SERVICE,
+                       f.credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY f
+                INNER JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON u.USER_ID = f.USER_ID
+                WHERE f.START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND f.credits > 0
+            """),
+            ("Cortex Analyst", f"""
+                SELECT USERNAME AS USER_NAME,
+                       'Cortex Analyst' AS SERVICE,
+                       credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_ANALYST_USAGE_HISTORY
+                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND credits > 0
+            """),
+            ("Cortex Agent", f"""
+                SELECT USER_NAME,
+                       'Cortex Agent' AS SERVICE,
+                       token_credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY
+                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+            """),
+            ("Cortex Code (CLI)", f"""
+                SELECT USER_NAME,
+                       'Cortex Code' AS SERVICE,
+                       token_credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
+                WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+            """),
+            ("Cortex Code (Snowsight)", f"""
+                SELECT USER_NAME,
+                       'Cortex Code' AS SERVICE,
+                       token_credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
+                WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+            """),
+            ("Cortex Code (Desktop)", f"""
+                SELECT USER_NAME,
+                       'Cortex Code' AS SERVICE,
+                       token_credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_DESKTOP_USAGE_HISTORY
+                WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+            """),
+            ("Snowflake Intelligence", f"""
+                SELECT USER_NAME,
+                       'Snowflake Intelligence' AS SERVICE,
+                       token_credits AS TOKEN_CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_INTELLIGENCE_USAGE_HISTORY
+                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+            """),
+        ]
+
+        frames = []
+        any_missing = False
+        for _, sql in sources:
+            try:
+                rows = conn.query(sql)
+                if rows:
+                    frames.append(pd.DataFrame(rows))
+            except Exception:
+                any_missing = True  # view doesn't exist on this account
+
+        if not frames:
+            return pd.DataFrame(columns=["USER_NAME", "SERVICE", "TOKEN_CREDITS"]), any_missing
+        return pd.concat(frames, ignore_index=True), any_missing
+
+    def get_user_breakdown(self, days: int = 7, refresh: bool = False) -> tuple[pd.DataFrame, int | None, str | None]:
+        """
+        Complete cost per user — combines warehouse attributed credits + all AI token costs.
+        Each data source is queried independently so accounts that are missing Cortex views
+        or QUERY_ATTRIBUTION_HISTORY still get a meaningful (partial) result.
+        Returns (df, cache_age_minutes, note).
         """
         cache_key = f"cost_users_{days}d_fetched_at"
 
@@ -174,93 +316,74 @@ class CostService:
             if cached:
                 df = pd.DataFrame(cached)
                 df = df.sort_values("TOTAL_CREDITS", ascending=False).reset_index(drop=True)
-                return df, self._cache_age_minutes(cache_key)
+                return df, self._cache_age_minutes(cache_key), None
 
-        sql = f"""
-        WITH warehouse_costs AS (
-            SELECT USER_NAME,
-                   ROUND(SUM(CREDITS_ATTRIBUTED_COMPUTE), 2) AS warehouse_credits,
-                   ROUND(SUM(COALESCE(CREDITS_USED_QUERY_ACCELERATION, 0)), 2) AS qa_credits,
-                   COUNT(*) AS query_count
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            GROUP BY 1
-        ),
-        ai_costs AS (
-            SELECT USER_NAME, service, SUM(token_credits) AS credits
-            FROM (
-                SELECT u.LOGIN_NAME AS user_name, 'Cortex Functions' AS service, credits AS token_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY f
-                INNER JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON u.USER_ID = f.USER_ID
-                WHERE f.START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-                UNION ALL
-                SELECT USERNAME, 'Cortex Analyst', credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_ANALYST_USAGE_HISTORY
-                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-                UNION ALL
-                SELECT USER_NAME, 'Cortex Agent', token_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY
-                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-                UNION ALL
-                SELECT USER_NAME, 'Cortex Code', token_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-                WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-                UNION ALL
-                SELECT USER_NAME, 'Cortex Code', token_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-                WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-                UNION ALL
-                SELECT USER_NAME, 'Cortex Code', token_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_DESKTOP_USAGE_HISTORY
-                WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-                UNION ALL
-                SELECT USER_NAME, 'Snowflake Intelligence', token_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_INTELLIGENCE_USAGE_HISTORY
-                WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            ) sub
-            WHERE token_credits > 0
-            GROUP BY 1, 2
-        ),
-        ai_pivot AS (
-            SELECT USER_NAME,
-                   ROUND(SUM(CASE WHEN service = 'Cortex Functions' THEN credits END), 2) AS cortex_functions,
-                   ROUND(SUM(CASE WHEN service = 'Cortex Analyst' THEN credits END), 2) AS cortex_analyst,
-                   ROUND(SUM(CASE WHEN service = 'Cortex Agent' THEN credits END), 2) AS cortex_agent,
-                   ROUND(SUM(CASE WHEN service = 'Cortex Code' THEN credits END), 2) AS cortex_code,
-                   ROUND(SUM(CASE WHEN service = 'Snowflake Intelligence' THEN credits END), 2) AS snowflake_intelligence,
-                   ROUND(SUM(credits), 2) AS total_ai_credits
-            FROM ai_costs
-            GROUP BY 1
-        )
-        SELECT COALESCE(w.USER_NAME, a.USER_NAME) AS USER_NAME,
-               COALESCE(w.query_count, 0) AS QUERY_COUNT,
-               COALESCE(w.warehouse_credits, 0) AS WAREHOUSE_CREDITS,
-               COALESCE(w.qa_credits, 0) AS QA_CREDITS,
-               COALESCE(a.cortex_functions, 0) AS CORTEX_FUNCTIONS,
-               COALESCE(a.cortex_analyst, 0) AS CORTEX_ANALYST,
-               COALESCE(a.cortex_agent, 0) AS CORTEX_AGENT,
-               COALESCE(a.cortex_code, 0) AS CORTEX_CODE,
-               COALESCE(a.snowflake_intelligence, 0) AS SNOWFLAKE_INTELLIGENCE,
-               ROUND(COALESCE(w.warehouse_credits, 0) + COALESCE(w.qa_credits, 0) + COALESCE(a.total_ai_credits, 0), 2) AS TOTAL_CREDITS
-        FROM warehouse_costs w
-        FULL OUTER JOIN ai_pivot a ON w.USER_NAME = a.USER_NAME
-        ORDER BY TOTAL_CREDITS DESC
-        LIMIT 30
-        """
         conn = self.context.connect()
         with conn:
-            rows = conn.query(sql)
-        df = pd.DataFrame(rows)
+            wh_df, credits_available = self._query_warehouse_costs(conn, days)
+            ai_raw, any_missing = self._query_cortex_ai_rows(conn, days)
+
+        # Pivot AI rows to one row per user
+        ai_services = ["Cortex Functions", "Cortex Analyst", "Cortex Agent",
+                        "Cortex Code", "Snowflake Intelligence"]
+        if not ai_raw.empty:
+            ai_pivot = (
+                ai_raw.groupby(["USER_NAME", "SERVICE"])["TOKEN_CREDITS"]
+                .sum()
+                .reset_index()
+                .pivot(index="USER_NAME", columns="SERVICE", values="TOKEN_CREDITS")
+                .reset_index()
+            )
+            for svc in ai_services:
+                if svc not in ai_pivot.columns:
+                    ai_pivot[svc] = 0.0
+        else:
+            ai_pivot = pd.DataFrame(columns=["USER_NAME"] + ai_services)
+
+        ai_pivot = ai_pivot.rename(columns={
+            "Cortex Functions":     "CORTEX_FUNCTIONS",
+            "Cortex Analyst":       "CORTEX_ANALYST",
+            "Cortex Agent":         "CORTEX_AGENT",
+            "Cortex Code":          "CORTEX_CODE",
+            "Snowflake Intelligence": "SNOWFLAKE_INTELLIGENCE",
+        })
+
+        # Full outer join on USER_NAME
+        df = wh_df.merge(ai_pivot, on="USER_NAME", how="outer")
+
+        ai_cols = ["CORTEX_FUNCTIONS", "CORTEX_ANALYST", "CORTEX_AGENT",
+                   "CORTEX_CODE", "SNOWFLAKE_INTELLIGENCE"]
+        for col in ["WAREHOUSE_CREDITS", "QA_CREDITS", "QUERY_COUNT"] + ai_cols:
+            if col not in df.columns:
+                df[col] = 0.0
+            df[col] = df[col].fillna(0)
+
+        df["TOTAL_CREDITS"] = (
+            df["WAREHOUSE_CREDITS"] + df["QA_CREDITS"] + df[ai_cols].sum(axis=1)
+        ).round(2)
+
+        df = df.sort_values("TOTAL_CREDITS", ascending=False).head(30).reset_index(drop=True)
+
         if not df.empty:
             today = date.today().isoformat()
             self.db.save_cost_user_snapshot(today, df.to_dict("records"))
             self._mark_cached(cache_key)
-        return df, None
 
-    def get_ai_costs(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+        parts = []
+        if not credits_available:
+            parts.append(_NOTE_NO_QUERY_ATTRIBUTION)
+        if any_missing:
+            parts.append(_NOTE_CORTEX_UNAVAILABLE)
+        note = " ".join(parts) if parts else None
+
+        return df, None, note
+
+    def get_ai_costs(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None, str | None]:
         """
         AI/ML token costs aggregated by service type.
-        Returns (df, cache_age_minutes).
+        Each Cortex view is queried independently — missing views are skipped rather
+        than failing the whole result.
+        Returns (df, cache_age_minutes, note).
         """
         cache_key = f"cost_ai_{days}d_fetched_at"
 
@@ -268,124 +391,88 @@ class CostService:
             cached = self.db.get_json_cache(f"cost_ai_{days}d_data")
             if cached:
                 df = pd.DataFrame(cached)
-                return df, self._cache_age_minutes(cache_key)
+                return df, self._cache_age_minutes(cache_key), None
 
-        sql = f"""
-        SELECT service AS SERVICE,
-               ROUND(SUM(token_credits), 2) AS TOTAL_CREDITS,
-               COUNT(*) AS REQUEST_COUNT
-        FROM (
-            SELECT 'Cortex Functions' AS service, credits AS token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT 'Cortex Analyst', credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_ANALYST_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT 'Cortex Agent', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT 'Cortex Code (CLI)', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-            WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT 'Cortex Code (Snowsight)', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-            WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT 'Cortex Code (Desktop)', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_DESKTOP_USAGE_HISTORY
-            WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT 'Snowflake Intelligence', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_INTELLIGENCE_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-        ) sub
-        WHERE token_credits > 0
-        GROUP BY 1
-        ORDER BY 2 DESC
-        """
         conn = self.context.connect()
         with conn:
-            rows = conn.query(sql)
-        df = pd.DataFrame(rows)
-        if not df.empty:
-            df["TOTAL_CREDITS"] = df["TOTAL_CREDITS"].astype(float)
-            total = df["TOTAL_CREDITS"].sum()
-            df["PCT"] = (df["TOTAL_CREDITS"] / total * 100).round(1)
-            self.db.set_json_cache(f"cost_ai_{days}d_data", df.to_dict("records"))
-            self._mark_cached(cache_key)
-        return df, None
+            ai_raw, any_missing = self._query_cortex_ai_rows(conn, days)
 
-    def get_ai_costs_by_user(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+        note = _NOTE_CORTEX_UNAVAILABLE if any_missing else None
+
+        if ai_raw.empty:
+            return pd.DataFrame(), None, note
+
+        df = (
+            ai_raw.groupby("SERVICE")
+            .agg(TOTAL_CREDITS=("TOKEN_CREDITS", "sum"), REQUEST_COUNT=("TOKEN_CREDITS", "count"))
+            .reset_index()
+            .rename(columns={"SERVICE": "SERVICE"})
+            .sort_values("TOTAL_CREDITS", ascending=False)
+            .reset_index(drop=True)
+        )
+        df["TOTAL_CREDITS"] = df["TOTAL_CREDITS"].round(2).astype(float)
+        total = df["TOTAL_CREDITS"].sum()
+        df["PCT"] = (df["TOTAL_CREDITS"] / total * 100).round(1) if total > 0 else 0.0
+
+        self.db.set_json_cache(f"cost_ai_{days}d_data", df.to_dict("records"))
+        self._mark_cached(cache_key)
+        return df, None, note
+
+    def get_ai_costs_by_user(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None, str | None]:
         """
         AI/ML token costs per user with per-service breakdown.
-        Returns (df, cache_age_minutes).
+        Each Cortex view is queried independently — missing views contribute zero.
+        Returns (df, cache_age_minutes, note).
         """
         cache_key = f"cost_ai_users_{days}d_fetched_at"
 
-        # No dedicated cache table for ai-users — use JSON cache
         if not refresh and self._is_fresh(cache_key):
             cached = self.db.get_json_cache(f"cost_ai_users_{days}d_data")
             if cached:
                 df = pd.DataFrame(cached)
-                return df, self._cache_age_minutes(cache_key)
+                return df, self._cache_age_minutes(cache_key), None
 
-        sql = f"""
-        WITH cte AS (
-            SELECT u.LOGIN_NAME AS user_name, 'Cortex Functions' AS service, credits AS token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY f
-            INNER JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON u.USER_ID = f.USER_ID
-            WHERE f.START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT USERNAME, 'Cortex Analyst', credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_ANALYST_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT USER_NAME, 'Cortex Agent', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT USER_NAME, 'Cortex Code', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-            WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT USER_NAME, 'Cortex Code', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-            WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT USER_NAME, 'Cortex Code', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_DESKTOP_USAGE_HISTORY
-            WHERE USAGE_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-            UNION ALL
-            SELECT USER_NAME, 'Snowflake Intelligence', token_credits
-            FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_INTELLIGENCE_USAGE_HISTORY
-            WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-        )
-        SELECT
-            user_name AS USER_NAME,
-            ROUND(SUM(CASE WHEN service = 'Cortex Functions' THEN token_credits END), 2) AS CORTEX_FUNCTIONS,
-            ROUND(SUM(CASE WHEN service = 'Cortex Analyst' THEN token_credits END), 2) AS CORTEX_ANALYST,
-            ROUND(SUM(CASE WHEN service = 'Cortex Agent' THEN token_credits END), 2) AS CORTEX_AGENT,
-            ROUND(SUM(CASE WHEN service = 'Cortex Code' THEN token_credits END), 2) AS CORTEX_CODE,
-            ROUND(SUM(CASE WHEN service = 'Snowflake Intelligence' THEN token_credits END), 2) AS SNOWFLAKE_INTELLIGENCE,
-            ROUND(SUM(token_credits), 2) AS TOTAL_CREDITS
-        FROM cte
-        WHERE token_credits > 0
-        GROUP BY ALL
-        ORDER BY TOTAL_CREDITS DESC
-        LIMIT 30
-        """
         conn = self.context.connect()
         with conn:
-            rows = conn.query(sql)
-        df = pd.DataFrame(rows)
-        if not df.empty:
-            self.db.set_json_cache(f"cost_ai_users_{days}d_data", df.to_dict("records"))
-            self._mark_cached(cache_key)
-        return df, None
+            ai_raw, any_missing = self._query_cortex_ai_rows(conn, days)
+
+        note = _NOTE_CORTEX_UNAVAILABLE if any_missing else None
+
+        if ai_raw.empty:
+            return pd.DataFrame(), None, note
+
+        ai_services = ["Cortex Functions", "Cortex Analyst", "Cortex Agent",
+                        "Cortex Code", "Snowflake Intelligence"]
+        pivot = (
+            ai_raw.groupby(["USER_NAME", "SERVICE"])["TOKEN_CREDITS"]
+            .sum()
+            .reset_index()
+            .pivot(index="USER_NAME", columns="SERVICE", values="TOKEN_CREDITS")
+            .reset_index()
+        )
+        for svc in ai_services:
+            if svc not in pivot.columns:
+                pivot[svc] = 0.0
+
+        pivot = pivot.rename(columns={
+            "Cortex Functions":       "CORTEX_FUNCTIONS",
+            "Cortex Analyst":         "CORTEX_ANALYST",
+            "Cortex Agent":           "CORTEX_AGENT",
+            "Cortex Code":            "CORTEX_CODE",
+            "Snowflake Intelligence":  "SNOWFLAKE_INTELLIGENCE",
+        })
+
+        ai_cols = ["CORTEX_FUNCTIONS", "CORTEX_ANALYST", "CORTEX_AGENT",
+                   "CORTEX_CODE", "SNOWFLAKE_INTELLIGENCE"]
+        for col in ai_cols:
+            pivot[col] = pivot[col].fillna(0).round(2)
+
+        pivot["TOTAL_CREDITS"] = pivot[ai_cols].sum(axis=1).round(2)
+        pivot = pivot.sort_values("TOTAL_CREDITS", ascending=False).head(30).reset_index(drop=True)
+
+        self.db.set_json_cache(f"cost_ai_users_{days}d_data", pivot.to_dict("records"))
+        self._mark_cached(cache_key)
+        return pivot, None, note
 
     def get_service_breakdown(self, days: int = 30, refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
         """
@@ -457,32 +544,66 @@ class CostService:
             self._mark_cached(cache_key)
         return df, None
 
-    def get_top_queries(self, days: int = 7, limit: int = 10, sort_by: str = "credits", refresh: bool = False) -> tuple[pd.DataFrame, int | None]:
+    def get_top_queries(self, days: int = 7, limit: int = 10, sort_by: str = "credits", refresh: bool = False) -> tuple[pd.DataFrame, int | None, str | None]:
         """
-        Top expensive individual queries using real attributed credits.
+        Top expensive individual queries. Uses QUERY_ATTRIBUTION_HISTORY for attributed
+        compute credits where available; falls back to QUERY_HISTORY (ranked by elapsed
+        time or bytes scanned) for accounts without Query Attribution enabled.
         Never cached — always fresh (results are per-query, not aggregate).
-        """
-        sql = f"""
-        SELECT
-            a.QUERY_ID,
-            a.USER_NAME,
-            a.WAREHOUSE_NAME,
-            ROUND(a.CREDITS_ATTRIBUTED_COMPUTE, 4) AS CREDITS,
-            ROUND(COALESCE(a.CREDITS_USED_QUERY_ACCELERATION, 0), 4) AS QA_CREDITS,
-            q.QUERY_TYPE,
-            LEFT(q.QUERY_TEXT, 80) AS QUERY_PREVIEW,
-            ROUND(q.TOTAL_ELAPSED_TIME / 1000, 1) AS SECONDS,
-            ROUND(q.BYTES_SCANNED / 1e9, 2) AS GB_SCANNED
-        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY a
-        LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q ON a.QUERY_ID = q.QUERY_ID
-        WHERE a.START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-        ORDER BY {'"CREDITS"' if sort_by == "credits" else '"GB_SCANNED"'} DESC
-        LIMIT {limit}
+        Returns (df, None, note).
         """
         conn = self.context.connect()
-        with conn:
-            rows = conn.query(sql)
-        return pd.DataFrame(rows), None
+
+        # Preferred: attributed compute credits
+        try:
+            sort_col = "CREDITS" if sort_by == "credits" else "GB_SCANNED"
+            sql = f"""
+            SELECT
+                a.QUERY_ID,
+                a.USER_NAME,
+                a.WAREHOUSE_NAME,
+                ROUND(a.CREDITS_ATTRIBUTED_COMPUTE, 4) AS CREDITS,
+                ROUND(COALESCE(a.CREDITS_USED_QUERY_ACCELERATION, 0), 4) AS QA_CREDITS,
+                q.QUERY_TYPE,
+                LEFT(q.QUERY_TEXT, 80) AS QUERY_PREVIEW,
+                ROUND(q.TOTAL_ELAPSED_TIME / 1000, 1) AS SECONDS,
+                ROUND(q.BYTES_SCANNED / 1e9, 2) AS GB_SCANNED
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY a
+            LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q ON a.QUERY_ID = q.QUERY_ID
+            WHERE a.START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+            ORDER BY {sort_col} DESC
+            LIMIT {limit}
+            """
+            with conn:
+                rows = conn.query(sql)
+            return pd.DataFrame(rows), None, None
+        except Exception:
+            pass
+
+        # Fallback: QUERY_HISTORY — credits always 0, sort by elapsed time or scan size
+        sort_col = "SECONDS" if sort_by == "credits" else "GB_SCANNED"
+        sql_fallback = f"""
+        SELECT
+            QUERY_ID,
+            USER_NAME,
+            WAREHOUSE_NAME,
+            0.0 AS CREDITS,
+            0.0 AS QA_CREDITS,
+            QUERY_TYPE,
+            LEFT(QUERY_TEXT, 80) AS QUERY_PREVIEW,
+            ROUND(TOTAL_ELAPSED_TIME / 1000, 1) AS SECONDS,
+            ROUND(BYTES_SCANNED / 1e9, 2) AS GB_SCANNED
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+          AND EXECUTION_STATUS = 'SUCCESS'
+          AND QUERY_TYPE = 'SELECT'
+        ORDER BY {sort_col} DESC
+        LIMIT {limit}
+        """
+        conn2 = self.context.connect()
+        with conn2:
+            rows = conn2.query(sql_fallback)
+        return pd.DataFrame(rows), None, _NOTE_TOP_QUERIES_NO_CREDITS
 
     # --- Daily trend ---
 
@@ -575,23 +696,51 @@ class CostService:
             df["CREDITS"] = df["CREDITS"].astype(float)
         return df
 
-    def get_user_detail(self, user_name: str, days: int = 7) -> pd.DataFrame:
-        """Per-warehouse credit breakdown for a specific user."""
-        sql = f"""
-        SELECT WAREHOUSE_NAME,
-               ROUND(SUM(CREDITS_ATTRIBUTED_COMPUTE), 4) AS CREDITS,
-               COUNT(*) AS QUERY_COUNT,
-               ROUND(AVG(CREDITS_ATTRIBUTED_COMPUTE), 6) AS AVG_CREDIT_PER_QUERY
-        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY
-        WHERE USER_NAME = '{user_name}'
-          AND START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
-        GROUP BY 1
-        ORDER BY 2 DESC
+    def get_user_detail(self, user_name: str, days: int = 7) -> tuple[pd.DataFrame, str | None]:
         """
+        Per-warehouse credit breakdown for a specific user.
+        Uses QUERY_ATTRIBUTION_HISTORY where available; falls back to QUERY_HISTORY
+        (credits will be 0) for accounts without Query Attribution enabled.
+        Returns (df, note).
+        """
+        safe_user = user_name.replace("'", "''")
         conn = self.context.connect()
-        with conn:
-            rows = conn.query(sql)
-        return pd.DataFrame(rows)
+
+        try:
+            sql = f"""
+            SELECT WAREHOUSE_NAME,
+                   ROUND(SUM(CREDITS_ATTRIBUTED_COMPUTE), 4) AS CREDITS,
+                   COUNT(*) AS QUERY_COUNT,
+                   ROUND(AVG(CREDITS_ATTRIBUTED_COMPUTE), 6) AS AVG_CREDIT_PER_QUERY
+            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY
+            WHERE USER_NAME = '{safe_user}'
+              AND START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+            GROUP BY 1
+            ORDER BY 2 DESC
+            """
+            with conn:
+                rows = conn.query(sql)
+            return pd.DataFrame(rows), None
+        except Exception:
+            pass
+
+        # Fallback — no attributed credits, but show warehouse usage by query count
+        sql_fallback = f"""
+        SELECT WAREHOUSE_NAME,
+               0.0 AS CREDITS,
+               COUNT(*) AS QUERY_COUNT,
+               0.0 AS AVG_CREDIT_PER_QUERY
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE USER_NAME = '{safe_user}'
+          AND START_TIME >= DATEADD(day, -{days}, CURRENT_TIMESTAMP())
+          AND EXECUTION_STATUS = 'SUCCESS'
+        GROUP BY 1
+        ORDER BY QUERY_COUNT DESC
+        """
+        conn2 = self.context.connect()
+        with conn2:
+            rows = conn2.query(sql_fallback)
+        return pd.DataFrame(rows), _NOTE_USER_DETAIL_NO_CREDITS
 
     # --- Storage usage ---
 

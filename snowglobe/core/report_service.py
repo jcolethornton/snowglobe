@@ -34,7 +34,7 @@ class ReportService:
         cost_total = float(cost_df["CREDITS"].sum()) if not cost_df.empty else 0
 
         # AI costs
-        ai_df, _ = self.cost_service.get_ai_costs(days)
+        ai_df, _, _ = self.cost_service.get_ai_costs(days)
         ai_total = float(ai_df["TOTAL_CREDITS"].sum()) if not ai_df.empty else 0
 
         # Storage
@@ -45,7 +45,7 @@ class ReportService:
         storage_rate_source = "contracted rate" if storage_rate != 23.0 else "$23/TB on-demand default"
 
         # Top queries
-        queries_df, _ = self.cost_service.get_top_queries(days=min(days, 7), limit=top_n)
+        queries_df, _, _ = self.cost_service.get_top_queries(days=min(days, 7), limit=top_n)
 
         return {
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),

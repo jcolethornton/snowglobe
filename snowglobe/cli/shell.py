@@ -977,7 +977,7 @@ def _cost_warehouses(cost_service, days: int, csv_path: str | None, refresh: boo
 def _cost_users(cost_service, days: int, csv_path: str | None, refresh: bool):
     """Display complete cost per user — warehouse + all AI services."""
     typer.echo(f"\nFetching user costs (last {days} days)...")
-    df, cache_age = cost_service.get_user_breakdown(days, refresh=refresh)
+    df, cache_age, note = cost_service.get_user_breakdown(days, refresh=refresh)
     if df.empty:
         typer.echo("  No user data found.")
         return
@@ -986,6 +986,8 @@ def _cost_users(cost_service, days: int, csv_path: str | None, refresh: bool):
         return
 
     typer.echo("")
+    if note:
+        typer.secho(f"  ⚠  {note}", fg=typer.colors.YELLOW)
     if cache_age is not None:
         typer.secho(f"  {_cache_indicator(cache_age).strip()}", fg=typer.colors.BRIGHT_BLACK)
     cli.print_table(df, title=f"User Cost Attribution ({days} days)")
@@ -996,7 +998,9 @@ def _cost_users(cost_service, days: int, csv_path: str | None, refresh: bool):
         selected = _drill_down_prompt(users, "View warehouse breakdown for user")
         if selected:
             typer.echo(f"\n  Fetching detail for {selected}...")
-            detail_df = cost_service.get_user_detail(selected, days)
+            detail_df, detail_note = cost_service.get_user_detail(selected, days)
+            if detail_note:
+                typer.secho(f"  ⚠  {detail_note}", fg=typer.colors.YELLOW)
             if detail_df.empty:
                 typer.echo("  No query attribution data for this user.")
             else:
@@ -1006,7 +1010,7 @@ def _cost_users(cost_service, days: int, csv_path: str | None, refresh: bool):
 def _cost_ai(cost_service, days: int, csv_path: str | None, refresh: bool):
     """Display AI/ML token costs by service type."""
     typer.echo(f"\nFetching AI costs (last {days} days)...")
-    df, cache_age = cost_service.get_ai_costs(days, refresh=refresh)
+    df, cache_age, note = cost_service.get_ai_costs(days, refresh=refresh)
     if df.empty:
         typer.echo("  No AI usage found.")
         return
@@ -1015,6 +1019,8 @@ def _cost_ai(cost_service, days: int, csv_path: str | None, refresh: bool):
         return
 
     typer.echo("")
+    if note:
+        typer.secho(f"  ⚠  {note}", fg=typer.colors.YELLOW)
     total = df["TOTAL_CREDITS"].astype(float).sum()
     typer.secho(f"  Total AI credits: {total:,.2f} ({days} days){_cache_indicator(cache_age)}", fg=typer.colors.GREEN, bold=True)
     typer.echo("")
@@ -1028,7 +1034,7 @@ def _cost_ai(cost_service, days: int, csv_path: str | None, refresh: bool):
 def _cost_ai_users(cost_service, days: int, csv_path: str | None, refresh: bool):
     """Display AI/ML token costs per user with service breakdown."""
     typer.echo(f"\nFetching AI costs by user (last {days} days)...")
-    df, cache_age = cost_service.get_ai_costs_by_user(days, refresh=refresh)
+    df, cache_age, note = cost_service.get_ai_costs_by_user(days, refresh=refresh)
     if df.empty:
         typer.echo("  No AI usage found.")
         return
@@ -1037,6 +1043,8 @@ def _cost_ai_users(cost_service, days: int, csv_path: str | None, refresh: bool)
         return
 
     typer.echo("")
+    if note:
+        typer.secho(f"  ⚠  {note}", fg=typer.colors.YELLOW)
     if cache_age is not None:
         typer.secho(f"  {_cache_indicator(cache_age).strip()}", fg=typer.colors.BRIGHT_BLACK)
     cli.print_table(df, title=f"AI Token Costs by User ({days} days)")
@@ -1066,7 +1074,7 @@ def _cost_services(cost_service, days: int, csv_path: str | None, refresh: bool)
 def _cost_queries(cost_service, days: int, csv_path: str | None, refresh: bool):
     """Display top expensive queries."""
     typer.echo(f"\nFetching top queries (last {days} days)...")
-    df, cache_age = cost_service.get_top_queries(days, refresh=refresh)
+    df, cache_age, note = cost_service.get_top_queries(days, refresh=refresh)
     if df.empty:
         typer.echo("  No query data found.")
         return
@@ -1075,6 +1083,8 @@ def _cost_queries(cost_service, days: int, csv_path: str | None, refresh: bool):
         return
 
     typer.echo("")
+    if note:
+        typer.secho(f"  ⚠  {note}", fg=typer.colors.YELLOW)
     cli.print_table(df, title=f"Top Expensive Queries ({days} days)")
 
 

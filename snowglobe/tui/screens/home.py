@@ -177,7 +177,7 @@ class HomeScreen(Vertical):
     @work(thread=True, exclusive=True, group="cost")
     def _fetch_queries(self) -> None:
         try:
-            df, _ = self.app.get_cost_service().get_top_queries(days=7, limit=5)
+            df, _, _ = self.app.get_cost_service().get_top_queries(days=7, limit=5)
         except Exception as e:
             self.app.call_from_thread(self._queries_failed, e)
             return

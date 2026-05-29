@@ -310,20 +310,21 @@ class CostScreen(Vertical):
     @work(thread=True, exclusive=True, group="cost")
     def _top_queries_worker(self, *, days: int) -> None:
         try:
-            df, _ = self.app.get_cost_service().get_top_queries(days=days, limit=20)
+            df, _, note = self.app.get_cost_service().get_top_queries(days=days, limit=20)
         except Exception as e:
             self.app.call_from_thread(self._fetch_failed, e)
             return
-        self.app.call_from_thread(self._render_top_queries, df, days)
+        self.app.call_from_thread(self._render_top_queries, df, days, note)
 
-    def _render_top_queries(self, df: pd.DataFrame, days: int) -> None:
+    def _render_top_queries(self, df: pd.DataFrame, days: int, note: str | None) -> None:
         if df is None or df.empty:
             self._set_status("No query data found.")
             self._clear_table()
             return
 
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"Top expensive queries — {days}d  ·  {len(df)} rows  ·  ⏎ to open in Tune (Phase 7)"
+            f"Top expensive queries — {days}d  ·  {len(df)} rows{note_suffix}  ·  ⏎ to open in Tune (Phase 7)"
         )
 
         table = self.query_one(DataTable)
@@ -459,24 +460,26 @@ class CostScreen(Vertical):
     @work(thread=True, exclusive=True, group="cost")
     def _users_worker(self, *, days: int, force: bool) -> None:
         try:
-            df, cache_age = self.app.get_cost_service().get_user_breakdown(days, refresh=force)
+            df, cache_age, note = self.app.get_cost_service().get_user_breakdown(days, refresh=force)
         except Exception as e:
             self.app.call_from_thread(self._fetch_failed, e)
             return
-        self.app.call_from_thread(self._render_users, df, days, cache_age)
+        self.app.call_from_thread(self._render_users, df, days, cache_age, note)
 
-    def _render_users(self, df: pd.DataFrame, days: int, cache_age: int | None) -> None:
+    def _render_users(self, df: pd.DataFrame, days: int, cache_age: int | None, note: str | None) -> None:
         if df is None or df.empty:
             self._set_status("No user data found.")
             self._clear_table()
             return
         total = float(df["TOTAL_CREDITS"].sum())
-        suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
+        cache_suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"User cost attribution — {days}d  ·  top {len(df)}  ·  total {total:,.2f}{suffix}  ·  ⏎ drill"
+            f"User cost attribution — {days}d  ·  top {len(df)}  ·  total {total:,.2f}{cache_suffix}{note_suffix}  ·  ⏎ drill"
         )
         table = self.query_one(DataTable)
         self._reset_table()
+        no_credits = note is not None and "Query Attribution" in (note or "")
         table.add_columns("USER", "TOTAL", "WAREHOUSE", "QA", "CORTEX", "QUERIES")
         for _, row in df.iterrows():
             cortex_total = sum(
@@ -485,11 +488,13 @@ class CostScreen(Vertical):
                     "CORTEX_CODE", "SNOWFLAKE_INTELLIGENCE",
                 )
             )
+            wh_str = "—" if no_credits else f"{float(row.get('WAREHOUSE_CREDITS', 0)):,.2f}"
+            qa_str = "—" if no_credits else f"{float(row.get('QA_CREDITS', 0)):,.4f}"
             table.add_row(
                 str(row["USER_NAME"]),
                 f"{float(row.get('TOTAL_CREDITS', 0)):,.2f}",
-                f"{float(row.get('WAREHOUSE_CREDITS', 0)):,.2f}",
-                f"{float(row.get('QA_CREDITS', 0)):,.4f}",
+                wh_str,
+                qa_str,
                 f"{cortex_total:,.2f}",
                 str(int(row.get("QUERY_COUNT", 0))),
                 key=str(row["USER_NAME"]),
@@ -503,30 +508,34 @@ class CostScreen(Vertical):
     @work(thread=True, exclusive=True, group="cost")
     def _user_drill_worker(self, *, user_name: str, days: int) -> None:
         try:
-            df = self.app.get_cost_service().get_user_detail(user_name, days)
+            df, note = self.app.get_cost_service().get_user_detail(user_name, days)
         except Exception as e:
             self.app.call_from_thread(self._fetch_failed, e)
             return
-        self.app.call_from_thread(self._render_user_drill, df, user_name, days)
+        self.app.call_from_thread(self._render_user_drill, df, user_name, days, note)
 
-    def _render_user_drill(self, df: pd.DataFrame, user_name: str, days: int) -> None:
+    def _render_user_drill(self, df: pd.DataFrame, user_name: str, days: int, note: str | None) -> None:
         if df is None or df.empty:
             self._set_status(f"No attribution data for {user_name} ({days}d).  Esc to return")
             self._clear_table()
             return
         total = float(df["CREDITS"].sum())
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"{user_name} per-warehouse — {days}d  ·  total {total:,.4f}  ·  Esc to return"
+            f"{user_name} per-warehouse — {days}d  ·  total {total:,.4f}{note_suffix}  ·  Esc to return"
         )
+        no_credits = note is not None
         table = self.query_one(DataTable)
         self._reset_table()
         table.add_columns("WAREHOUSE", "CREDITS", "QUERIES", "AVG/QUERY")
         for _, row in df.iterrows():
+            credits_str = "—" if no_credits else f"{float(row.get('CREDITS', 0)):,.4f}"
+            avg_str = "—" if no_credits else f"{float(row.get('AVG_CREDIT_PER_QUERY', 0)):,.6f}"
             table.add_row(
                 str(row.get("WAREHOUSE_NAME", "")),
-                f"{float(row.get('CREDITS', 0)):,.4f}",
+                credits_str,
                 str(int(row.get("QUERY_COUNT", 0))),
-                f"{float(row.get('AVG_CREDIT_PER_QUERY', 0)):,.6f}",
+                avg_str,
             )
 
     # --- View 6: AI services -----------------------------------------
@@ -539,21 +548,22 @@ class CostScreen(Vertical):
     @work(thread=True, exclusive=True, group="cost")
     def _ai_worker(self, *, days: int, force: bool) -> None:
         try:
-            df, cache_age = self.app.get_cost_service().get_ai_costs(days, refresh=force)
+            df, cache_age, note = self.app.get_cost_service().get_ai_costs(days, refresh=force)
         except Exception as e:
             self.app.call_from_thread(self._fetch_failed, e)
             return
-        self.app.call_from_thread(self._render_ai, df, days, cache_age)
+        self.app.call_from_thread(self._render_ai, df, days, cache_age, note)
 
-    def _render_ai(self, df: pd.DataFrame, days: int, cache_age: int | None) -> None:
+    def _render_ai(self, df: pd.DataFrame, days: int, cache_age: int | None, note: str | None) -> None:
         if df is None or df.empty:
             self._set_status("No AI usage found.")
             self._clear_table()
             return
         total = float(df["TOTAL_CREDITS"].astype(float).sum())
-        suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
+        cache_suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"AI token costs — {days}d  ·  total {total:,.2f} credits{suffix}"
+            f"AI token costs — {days}d  ·  total {total:,.2f} credits{cache_suffix}{note_suffix}"
         )
         table = self.query_one(DataTable)
         self._reset_table()
@@ -581,21 +591,22 @@ class CostScreen(Vertical):
     @work(thread=True, exclusive=True, group="cost")
     def _ai_users_worker(self, *, days: int, force: bool) -> None:
         try:
-            df, cache_age = self.app.get_cost_service().get_ai_costs_by_user(days, refresh=force)
+            df, cache_age, note = self.app.get_cost_service().get_ai_costs_by_user(days, refresh=force)
         except Exception as e:
             self.app.call_from_thread(self._fetch_failed, e)
             return
-        self.app.call_from_thread(self._render_ai_users, df, days, cache_age)
+        self.app.call_from_thread(self._render_ai_users, df, days, cache_age, note)
 
-    def _render_ai_users(self, df: pd.DataFrame, days: int, cache_age: int | None) -> None:
+    def _render_ai_users(self, df: pd.DataFrame, days: int, cache_age: int | None, note: str | None) -> None:
         if df is None or df.empty:
             self._set_status("No AI usage by user.")
             self._clear_table()
             return
         total = float(df["TOTAL_CREDITS"].astype(float).sum())
-        suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
+        cache_suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"AI token costs by user — {days}d  ·  top {len(df)}  ·  total {total:,.2f}{suffix}"
+            f"AI token costs by user — {days}d  ·  top {len(df)}  ·  total {total:,.2f}{cache_suffix}{note_suffix}"
         )
         table = self.query_one(DataTable)
         self._reset_table()

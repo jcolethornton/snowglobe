@@ -76,7 +76,7 @@ def queries(
     cost_service = CostService(context)
 
     typer.echo(f"\nFetching top {top} queries ({days} days)...")
-    df, _ = cost_service.get_top_queries(days=days, limit=top)
+    df, _, _ = cost_service.get_top_queries(days=days, limit=top)
 
     if df.empty:
         typer.echo("  No query data found.")

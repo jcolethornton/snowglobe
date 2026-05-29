@@ -21,6 +21,11 @@ def _export_csv(df, csv_path: str | None) -> bool:
     return False
 
 
+def _print_note(note: str | None) -> None:
+    if note:
+        typer.secho(f"⚠  {note}", fg=typer.colors.YELLOW)
+
+
 @cost_app.command()
 def summary(
     ctx: typer.Context,
@@ -73,12 +78,13 @@ def users(
 ):
     """Complete cost per user — warehouse + AI services."""
     cost_service = _get_cost_service(ctx)
-    df, _ = cost_service.get_user_breakdown(min(days, 7), refresh=refresh)
+    df, _, note = cost_service.get_user_breakdown(min(days, 7), refresh=refresh)
     if df.empty:
         typer.echo("No user data found.")
         return
     if _export_csv(df, csv):
         return
+    _print_note(note)
     cli.print_table(df, title=f"User Cost Attribution ({days} days)")
 
 
@@ -91,12 +97,13 @@ def ai(
 ):
     """AI/ML token costs by service type."""
     cost_service = _get_cost_service(ctx)
-    df, _ = cost_service.get_ai_costs(days, refresh=refresh)
+    df, _, note = cost_service.get_ai_costs(days, refresh=refresh)
     if df.empty:
         typer.echo("No AI usage found.")
         return
     if _export_csv(df, csv):
         return
+    _print_note(note)
     total = df["TOTAL_CREDITS"].astype(float).sum()
     typer.secho(f"\nTotal AI credits: {total:,.2f} ({days} days)", fg=typer.colors.GREEN, bold=True)
     typer.echo("")
@@ -116,12 +123,13 @@ def ai_users(
 ):
     """AI/ML token costs per user with service breakdown."""
     cost_service = _get_cost_service(ctx)
-    df, _ = cost_service.get_ai_costs_by_user(days, refresh=refresh)
+    df, _, note = cost_service.get_ai_costs_by_user(days, refresh=refresh)
     if df.empty:
         typer.echo("No AI usage found.")
         return
     if _export_csv(df, csv):
         return
+    _print_note(note)
     cli.print_table(df, title=f"AI Token Costs by User ({days} days)")
 
 
@@ -154,12 +162,13 @@ def queries(
 ):
     """Top expensive individual queries by attributed credits."""
     cost_service = _get_cost_service(ctx)
-    df, _ = cost_service.get_top_queries(days, limit=limit, sort_by=sort_by, refresh=refresh)
+    df, _, note = cost_service.get_top_queries(days, limit=limit, sort_by=sort_by, refresh=refresh)
     if df.empty:
         typer.echo("No query data found.")
         return
     if _export_csv(df, csv):
         return
+    _print_note(note)
     cli.print_table(df, title=f"Top Expensive Queries ({days} days)")
 
 
