@@ -304,7 +304,9 @@ class CostService:
 
         if not frames:
             return pd.DataFrame(columns=["USER_NAME", "SERVICE", "TOKEN_CREDITS"]), any_missing
-        return pd.concat(frames, ignore_index=True), any_missing
+        result = pd.concat(frames, ignore_index=True)
+        result["TOKEN_CREDITS"] = result["TOKEN_CREDITS"].astype(float)
+        return result, any_missing
 
     def get_user_breakdown(self, days: int = 7, refresh: bool = False) -> tuple[pd.DataFrame, int | None, str | None]:
         """
@@ -319,6 +321,12 @@ class CostService:
             cached = self.db.get_cost_user_cache()
             if cached:
                 df = pd.DataFrame(cached)
+                numeric_cols = ["WAREHOUSE_CREDITS", "QA_CREDITS", "QUERY_COUNT",
+                                "CORTEX_FUNCTIONS", "CORTEX_ANALYST", "CORTEX_AGENT",
+                                "CORTEX_CODE", "SNOWFLAKE_INTELLIGENCE", "TOTAL_CREDITS"]
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = df[col].astype(float)
                 df = df.sort_values("TOTAL_CREDITS", ascending=False).reset_index(drop=True)
                 return df, self._cache_age_minutes(cache_key), None
 
@@ -395,6 +403,7 @@ class CostService:
             cached = self.db.get_json_cache(f"cost_ai_{days}d_data")
             if cached:
                 df = pd.DataFrame(cached)
+                df["TOTAL_CREDITS"] = df["TOTAL_CREDITS"].astype(float)
                 return df, self._cache_age_minutes(cache_key), None
 
         conn = self.context.connect()
@@ -434,6 +443,11 @@ class CostService:
             cached = self.db.get_json_cache(f"cost_ai_users_{days}d_data")
             if cached:
                 df = pd.DataFrame(cached)
+                ai_cols = ["CORTEX_FUNCTIONS", "CORTEX_ANALYST", "CORTEX_AGENT",
+                           "CORTEX_CODE", "SNOWFLAKE_INTELLIGENCE", "TOTAL_CREDITS"]
+                for col in ai_cols:
+                    if col in df.columns:
+                        df[col] = df[col].astype(float)
                 return df, self._cache_age_minutes(cache_key), None
 
         conn = self.context.connect()
