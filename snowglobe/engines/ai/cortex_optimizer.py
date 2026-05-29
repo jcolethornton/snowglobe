@@ -1,12 +1,14 @@
 import json
 
+CORTEX_DEFAULT_MODEL = "claude-haiku-4-5"
+
 
 class CortexOptimizer:
 
     def __init__(self, connection):
         self.connection = connection
 
-    def analyze_query(self, sql_text, suggestions, cost_attributes, model: str = "claude-haiku-4-5"):
+    def analyze_query(self, sql_text, suggestions, cost_attributes, model: str = CORTEX_DEFAULT_MODEL):
 
         prompt = (
             "You are a Snowflake performance expert. "
@@ -52,7 +54,16 @@ class CortexOptimizer:
         ) AS AI_RESULT
         """
 
-        with self.connection:
-            result = self.connection.query(sql)
+        try:
+            with self.connection:
+                result = self.connection.query(sql)
+        except Exception as e:
+            err = str(e)
+            if "does not exist" in err.lower() or "invalid model" in err.lower() or "not available" in err.lower():
+                return (
+                    f"Cortex AI model '{model}' is not available in your Snowflake region. "
+                    "Check available models at: https://docs.snowflake.com/en/user-guide/snowflake-cortex/llm-functions"
+                )
+            raise
 
         return result[0]["AI_RESULT"] if result else "No AI suggestions"

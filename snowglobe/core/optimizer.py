@@ -1,7 +1,7 @@
 from typing import List, Dict
 from snowglobe.collectors.query_profile import QueryProfileCollector
 from snowglobe.engines.optimizer.query_optimizer import QueryOptimizerEngine
-from snowglobe.engines.ai.cortex_optimizer import CortexOptimizer
+from snowglobe.engines.ai.cortex_optimizer import CortexOptimizer, CORTEX_DEFAULT_MODEL
 
 
 class QueryOptimizerService:
@@ -78,7 +78,7 @@ class QueryOptimizerService:
     def expensive_operators(self):
         return self.optimizer.get_expensive_operators()
 
-    def ai_suggestion(self, model: str = "claude-haiku-4-5"):
+    def ai_suggestion(self, model: str = CORTEX_DEFAULT_MODEL):
         conn = self.context.connect()
         cortex = CortexOptimizer(connection=conn)
         ai_result = cortex.analyze_query(
