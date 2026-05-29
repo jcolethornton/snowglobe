@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS cost_user_snapshots (
     cortex_code REAL DEFAULT 0,
     snowflake_intelligence REAL DEFAULT 0,
     total_credits REAL NOT NULL,
+    query_count INTEGER DEFAULT 0,
     PRIMARY KEY (snapshot_date, user_name)
 );
 
@@ -429,8 +430,8 @@ class StateDB:
                 """INSERT INTO cost_user_snapshots
                    (snapshot_date, user_name, warehouse_credits, qa_credits,
                     cortex_functions, cortex_analyst, cortex_agent, cortex_code,
-                    snowflake_intelligence, total_credits)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    snowflake_intelligence, total_credits, query_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (date, row["USER_NAME"],
                  float(row.get("WAREHOUSE_CREDITS", 0)),
                  float(row.get("QA_CREDITS", 0)),
@@ -439,7 +440,8 @@ class StateDB:
                  float(row.get("CORTEX_AGENT", 0)),
                  float(row.get("CORTEX_CODE", 0)),
                  float(row.get("SNOWFLAKE_INTELLIGENCE", 0)),
-                 float(row.get("TOTAL_CREDITS", 0))),
+                 float(row.get("TOTAL_CREDITS", 0)),
+                 int(row.get("QUERY_COUNT", 0))),
             )
         conn.commit()
 
@@ -487,7 +489,7 @@ class StateDB:
                       qa_credits AS QA_CREDITS, cortex_functions AS CORTEX_FUNCTIONS,
                       cortex_analyst AS CORTEX_ANALYST, cortex_agent AS CORTEX_AGENT,
                       cortex_code AS CORTEX_CODE, snowflake_intelligence AS SNOWFLAKE_INTELLIGENCE,
-                      total_credits AS TOTAL_CREDITS
+                      total_credits AS TOTAL_CREDITS, query_count AS QUERY_COUNT
                FROM cost_user_snapshots WHERE snapshot_date = ?""",
             (today,),
         ).fetchall()
