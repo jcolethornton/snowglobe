@@ -1,4 +1,4 @@
-"""Cost screen — Phase 4: Summary, Trend, Top queries.
+"""Cost screen — Summary, Trend, Top queries, Warehouses, Users, AI, Storage, and more.
 
 Layout:
   ┌─ window: 30d ▾    [ Re-fetch ] ─────────────────────────────────┐
@@ -6,12 +6,10 @@ Layout:
   │ │ ▸ Summary        │ │ DataTable rendering the active view  │  │
   │ │   Trend          │ │                                       │  │
   │ │   Top queries    │ │                                       │  │
-  │ │   (more soon)    │ │                                       │  │
+  │ │   Warehouses     │ │                                       │  │
+  │ │   ...            │ │                                       │  │
   │ └──────────────────┘ └───────────────────────────────────────┘  │
   └──────────────────────────────────────────────────────────────────┘
-
-The other nine CostService views (Warehouses, Users, AI, Storage, ...) are
-listed but marked "(Phase 8)" — selecting them shows a toast.
 """
 import pandas as pd
 
@@ -31,7 +29,7 @@ def _bar(pct_or_ratio: float, width: int = _BAR_WIDTH) -> str:
 
 
 class CostScreen(Vertical):
-    """Cost analysis — Summary, daily trend, and top queries (Phase 4 subset)."""
+    """Cost analysis — Summary, trend, top queries, warehouses, users, AI, storage, and more."""
 
     BINDINGS = [
         ("escape", "back_from_drill", "Back"),
@@ -324,7 +322,7 @@ class CostScreen(Vertical):
 
         note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"Top expensive queries — {days}d  ·  {len(df)} rows{note_suffix}  ·  ⏎ to open in Tune (Phase 7)"
+            f"Top expensive queries — {days}d  ·  {len(df)} rows{note_suffix}  ·  ⏎ to open in Tune"
         )
 
         table = self.query_one(DataTable)
