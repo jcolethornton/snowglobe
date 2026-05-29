@@ -121,6 +121,17 @@ class AccessService:
         """
         p = progress or TyperRefreshProgress()
         sf = self.context.connect()
+
+        try:
+            with sf:
+                sf.query("SELECT 1 FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES LIMIT 1")
+        except Exception as e:
+            raise RuntimeError(
+                "Cannot access SNOWFLAKE.ACCOUNT_USAGE. "
+                "Grant access with:\n"
+                "  GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <your_role>;"
+            ) from e
+
         collector = AccessCollector(sf)
 
         # Determine if we can do incremental
