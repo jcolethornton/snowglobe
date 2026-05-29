@@ -78,7 +78,9 @@ class QueryOptimizerService:
     def expensive_operators(self):
         return self.optimizer.get_expensive_operators()
 
-    def ai_suggestion(self, model: str = CORTEX_DEFAULT_MODEL):
+    def ai_suggestion(self, model: str | None = None):
+        if model is None:
+            model = self.context.profile.get("cortex_model", CORTEX_DEFAULT_MODEL)
         conn = self.context.connect()
         cortex = CortexOptimizer(connection=conn)
         ai_result = cortex.analyze_query(
