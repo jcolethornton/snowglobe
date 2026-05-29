@@ -3,6 +3,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Static
 
+from snowglobe import __version__
 from snowglobe.tui.widgets.cache_badge import CacheBadge
 
 
@@ -10,7 +11,7 @@ class SnowglobeHeader(Horizontal):
     """Top bar — title on the left, profile / role / cache on the right."""
 
     def compose(self) -> ComposeResult:
-        yield Static("Snowglobe", classes="header-title")
+        yield Static(f"Snowglobe v{__version__}", classes="header-title")
         yield Static(self._profile_text(), classes="header-meta", id="header-profile")
         yield CacheBadge()
 

@@ -1,4 +1,6 @@
 import typer
+from typing import Optional
+from snowglobe import __version__
 from snowglobe.cli.context import SnowglobeContext
 from snowglobe.cli.access import access_app
 from snowglobe.cli.optimizer import opt_app
@@ -6,6 +8,12 @@ from snowglobe.cli.cost import cost_app
 from snowglobe.cli.diff import diff_app
 from snowglobe.cli.report import report_app
 from snowglobe.cli.debug import debug_app
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"snowglobe-cli {__version__}")
+        raise typer.Exit()
 
 app = typer.Typer(
     help="Snowglobe — Explainable cost and access visibility for Snowflake",
@@ -123,7 +131,15 @@ def main(
         "--verbose",
         "-v",
         help="Enable verbose output"
-    )
+    ),
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
 ):
     """
     Inspect and understand Snowflake cost, access, and ownership.

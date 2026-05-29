@@ -20,7 +20,8 @@ def start_shell(ctx: SnowglobeContext):
         completer=FuzzyCompleter(SnowglobeCompleter(ctx))
     )
 
-    typer.echo("Snowglobe Interactive Shell")
+    from snowglobe import __version__
+    typer.echo(f"Snowglobe Interactive Shell  v{__version__}")
     typer.echo("Type 'check' to get started, or 'help' for all commands.\n")
 
     while True:

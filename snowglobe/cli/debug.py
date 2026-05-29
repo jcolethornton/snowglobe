@@ -1,6 +1,7 @@
 import typer
 from pathlib import Path
 from typing import Callable, Optional, Protocol
+from snowglobe import __version__
 
 debug_app = typer.Typer(
     help="Diagnose configuration and connectivity issues",
@@ -104,7 +105,7 @@ def run_diagnostics(
     r = reporter or TyperReporter()
     TOTAL = 8
 
-    r.header("Snowglobe Connection Diagnostics")
+    r.header(f"Snowglobe Connection Diagnostics  (v{__version__})")
 
     # --- Step 1: Config file exists ---
     r.step(1, TOTAL, "Config file")
