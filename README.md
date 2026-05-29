@@ -71,7 +71,7 @@ pip install -e '.[tui]'
 
 ## Requirements
 
-- Python **3.12+**
+- Python **3.12.3+**
 - A Snowflake account
 - A Snowflake role with `IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` (grants read access to `ACCOUNT_USAGE`)
 - Optionally: `IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` for `ORGANIZATION_USAGE` to get your contracted storage rate
