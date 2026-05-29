@@ -1,5 +1,5 @@
 [project]
-name = "snowglobe"
+name = "snowglobe-cli"
 version = "0.1.0"
 description = "Explainable cost and access visibility for Snowflake"
 readme = "README.md"

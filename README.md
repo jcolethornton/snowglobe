@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/snowglobe/"><img src="https://img.shields.io/pypi/v/snowglobe" alt="PyPI version"/></a>
-  <a href="https://pypi.org/project/snowglobe/"><img src="https://img.shields.io/pypi/pyversions/snowglobe" alt="Python versions"/></a>
+  <a href="https://pypi.org/project/snowglobe-cli/"><img src="https://img.shields.io/pypi/v/snowglobe-cli" alt="PyPI version"/></a>
+  <a href="https://pypi.org/project/snowglobe-cli/"><img src="https://img.shields.io/pypi/pyversions/snowglobe-cli" alt="Python versions"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"/></a>
 </p>
 
@@ -55,8 +55,8 @@ All three share the same local SQLite cache and the same service layer, so anyth
 ## Installation
 
 ```bash
-pip install 'snowglobe[tui]'        # includes the Textual TUI (recommended)
-pip install snowglobe               # CLI + shell only, no Textual dependency
+pip install 'snowglobe-cli[tui]'    # includes the Textual TUI (recommended)
+pip install snowglobe-cli           # CLI + shell only, no Textual dependency
 ```
 
 Or from source:
