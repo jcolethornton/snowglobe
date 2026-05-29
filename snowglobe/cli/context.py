@@ -34,6 +34,7 @@ class SnowglobeContext:
             self.profile["role"] = self.role
 
     def connect(self) -> SnowflakeReadOnly:
+        self.load_profile()
         if not hasattr(self, "_sf"):
             self._sf = SnowflakeReadOnly(
                 account=self.profile["account"],
