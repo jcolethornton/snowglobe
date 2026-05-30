@@ -1,13 +1,8 @@
 """Home — landing dashboard.
 
-Three KPI cards (Cache / Connection / This week) at the top, quick-action
-hotkeys + recent expensive queries DataTable below. KPI data comes from
-local SQLite (instant); recent queries fire one `get_top_queries(7, 5)`
-worker on mount.
-
-Hotkeys jump to common workflows:
-  a  Access check        c  Cost summary        r  Refresh cache
-  w  Who-access          s  Risk scan
+Three KPI cards (Cache / Connection / This week) at the top.
+Below: 30d spend trend (left) and recent expensive queries (right).
+Both panels fire Snowflake workers on mount; KPI data is local/instant.
 """
 from datetime import datetime, timezone
 
@@ -48,6 +43,10 @@ class HomeScreen(Vertical):
                 yield Static("loading…",   id="kpi-week", classes="kpi-body")
 
         with Horizontal(id="home-body"):
+            with Vertical(id="home-trend", classes="panel"):
+                yield Static("30d spend trend", classes="panel-title")
+                yield DataTable(id="home-trend-table",
+                                cursor_type="none", zebra_stripes=True)
             with Vertical(id="home-queries", classes="panel"):
                 yield Static("Recent expensive queries (7d)", classes="panel-title")
                 yield DataTable(id="home-queries-table",
@@ -59,7 +58,8 @@ class HomeScreen(Vertical):
         self._refresh_kpis()
         # Re-render KPIs whenever the app-level cache age ticks (every 30s).
         self.watch(self.app, "cache_age_minutes", lambda _v: self._refresh_kpis())
-        # Fire one query fetch when Home first mounts.
+        # Fire both Snowflake workers on mount (different groups → concurrent).
+        self._fetch_trend()
         self._fetch_queries()
 
     # --- Hotkey action -----------------------------------------------
@@ -161,6 +161,39 @@ class HomeScreen(Vertical):
             f"  {risk_line}"
         )
         self.query_one("#kpi-week", Static).update(text)
+
+    # --- 30d spend trend (one Snowflake call on mount) ---------------
+
+    @work(thread=True, exclusive=True, group="trend")
+    def _fetch_trend(self) -> None:
+        try:
+            df, _ = self.app.get_cost_service().get_daily_trend(days=30)
+        except Exception as e:
+            self.app.call_from_thread(self._trend_failed, e)
+            return
+        self.app.call_from_thread(self._render_trend, df)
+
+    def _trend_failed(self, err: Exception) -> None:
+        table = self.query_one("#home-trend-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns(f"(could not load — {err})")
+
+    def _render_trend(self, df: pd.DataFrame) -> None:
+        table = self.query_one("#home-trend-table", DataTable)
+        table.clear(columns=True)
+        if df is None or df.empty:
+            table.add_columns("(no trend data)")
+            return
+        table.add_columns("DATE", "CREDITS", "TREND")
+        max_c = float(df["CREDITS"].max()) if not df.empty else 1.0
+        for _, row in df.iterrows():
+            credits = float(row["CREDITS"])
+            bar_width = max(1, int(credits / max_c * 20)) if max_c > 0 else 0
+            table.add_row(
+                str(row["DATE"]),
+                f"{credits:,.2f}",
+                "█" * bar_width,
+            )
 
     # --- Recent expensive queries (one Snowflake call on mount) -----
 
