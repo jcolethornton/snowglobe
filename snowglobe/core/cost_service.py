@@ -1335,3 +1335,132 @@ class CostService:
             return df, "Query Attribution not enabled — showing slowest queries"
         except Exception:
             return pd.DataFrame(), "Could not load queries"
+
+    def get_user_warehouse_queries(
+        self, user_name: str, warehouse_name: str, days: int = 7, limit: int = 10
+    ) -> tuple[pd.DataFrame, str | None]:
+        """Top queries for a user on a specific warehouse over the past N days."""
+        safe_user = _sq(user_name)
+        safe_wh = _sq(warehouse_name)
+        conn = self.context.connect()
+        try:
+            with conn:
+                rows = conn.query(f"""
+                    SELECT a.QUERY_ID,
+                           ROUND(a.CREDITS_ATTRIBUTED_COMPUTE, 4) AS CREDITS,
+                           q.QUERY_TYPE,
+                           LEFT(q.QUERY_TEXT, 80) AS QUERY_PREVIEW,
+                           ROUND(q.TOTAL_ELAPSED_TIME / 1000, 1) AS SECONDS,
+                           ROUND(q.BYTES_SCANNED / 1e9, 2) AS GB_SCANNED
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY a
+                    LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q ON a.QUERY_ID = q.QUERY_ID
+                    WHERE a.START_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                      AND a.WAREHOUSE_NAME = '{safe_wh}'
+                      AND a.USER_NAME = '{safe_user}'
+                    ORDER BY a.CREDITS_ATTRIBUTED_COMPUTE DESC
+                    LIMIT {limit}
+                """)
+            if not rows:
+                return pd.DataFrame(), None
+            df = pd.DataFrame(rows)
+            df["CREDITS"] = df["CREDITS"].astype(float)
+            return df, None
+        except Exception:
+            pass
+
+        conn2 = self.context.connect()
+        try:
+            with conn2:
+                rows = conn2.query(f"""
+                    SELECT QUERY_ID, 0.0 AS CREDITS, QUERY_TYPE,
+                           LEFT(QUERY_TEXT, 80) AS QUERY_PREVIEW,
+                           ROUND(TOTAL_ELAPSED_TIME / 1000, 1) AS SECONDS,
+                           ROUND(BYTES_SCANNED / 1e9, 2) AS GB_SCANNED
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+                    WHERE START_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                      AND WAREHOUSE_NAME = '{safe_wh}'
+                      AND USER_NAME = '{safe_user}'
+                      AND EXECUTION_STATUS = 'SUCCESS'
+                    ORDER BY TOTAL_ELAPSED_TIME DESC
+                    LIMIT {limit}
+                """)
+            if not rows:
+                return pd.DataFrame(), "Query Attribution not enabled — showing slowest queries"
+            df = pd.DataFrame(rows)
+            df["CREDITS"] = df["CREDITS"].astype(float)
+            return df, "Query Attribution not enabled — showing slowest queries"
+        except Exception:
+            return pd.DataFrame(), "Could not load queries"
+
+    def get_ai_service_users(self, service_name: str, days: int = 30) -> tuple[pd.DataFrame, str | None]:
+        """Users of a specific AI/Cortex service over the past N days."""
+        _empty = pd.DataFrame(columns=["USER_NAME", "CREDITS", "REQUESTS"])
+        sql_map = {
+            "Cortex Functions": f"""
+                SELECT u.LOGIN_NAME AS USER_NAME,
+                       ROUND(SUM(f.credits), 4) AS CREDITS, COUNT(*) AS REQUESTS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY f
+                INNER JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON u.USER_ID = f.USER_ID
+                WHERE f.START_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                  AND f.credits > 0
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 50
+            """,
+            "Cortex Analyst": f"""
+                SELECT USERNAME AS USER_NAME,
+                       ROUND(SUM(credits), 4) AS CREDITS, COUNT(*) AS REQUESTS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_ANALYST_USAGE_HISTORY
+                WHERE START_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                  AND credits > 0
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 50
+            """,
+            "Cortex Agent": f"""
+                SELECT USER_NAME,
+                       ROUND(SUM(token_credits), 4) AS CREDITS, COUNT(*) AS REQUESTS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY
+                WHERE START_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 50
+            """,
+            "Cortex Code": f"""
+                SELECT USER_NAME,
+                       ROUND(SUM(token_credits), 4) AS CREDITS, COUNT(*) AS REQUESTS
+                FROM (
+                    SELECT USER_NAME, token_credits
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
+                    WHERE USAGE_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                      AND token_credits > 0
+                    UNION ALL
+                    SELECT USER_NAME, token_credits
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
+                    WHERE USAGE_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                      AND token_credits > 0
+                    UNION ALL
+                    SELECT USER_NAME, token_credits
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_DESKTOP_USAGE_HISTORY
+                    WHERE USAGE_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                      AND token_credits > 0
+                ) GROUP BY 1 ORDER BY 2 DESC LIMIT 50
+            """,
+            "Snowflake Intelligence": f"""
+                SELECT USER_NAME,
+                       ROUND(SUM(token_credits), 4) AS CREDITS, COUNT(*) AS REQUESTS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWFLAKE_INTELLIGENCE_USAGE_HISTORY
+                WHERE START_TIME >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+                  AND token_credits > 0
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 50
+            """,
+        }
+        sql = sql_map.get(service_name)
+        if not sql:
+            return _empty, f"No user breakdown available for: {service_name}"
+        conn = self.context.connect()
+        try:
+            with conn:
+                rows = conn.query(sql)
+            if not rows:
+                return _empty, None
+            df = pd.DataFrame(rows)
+            df["CREDITS"] = df["CREDITS"].astype(float)
+            return df, None
+        except Exception:
+            return _empty, "Could not load user breakdown"

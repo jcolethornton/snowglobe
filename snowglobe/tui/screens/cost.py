@@ -40,17 +40,22 @@ class CostScreen(Vertical):
 
     # Active view: "summary" | "trend" | "top_queries" | "warehouses" | "users"
     # | "ai" | "ai_users" | "services" | "storage" | "replication" | "mv" | "budget"
-    # | "drill_service" | "drill_warehouse" | "drill_user"
+    # | "drill_service" | "drill_warehouse" | "drill_user" | "drill_user_queries"
+    # | "drill_ai_service"
     # | "drill_day" | "drill_day_resource" | "drill_day_resource_users" | "drill_day_user_queries"
     _current_view: str = "summary"
     _drill_service: str | None = None
     _drill_warehouse: str | None = None
     _drill_user: str | None = None
+    _drill_user_warehouse: str | None = None      # warehouse selected in drill_user
+    _drill_ai_service: str | None = None          # AI service selected in ai view
     _drill_day: str | None = None
     _drill_day_service_type: str | None = None
     _drill_day_resource: str | None = None
     _drill_day_user: str | None = None
-    _drill_day_resource_kind: str = "other"  # "warehouse" | "ai" | "other"
+    _drill_day_resource_kind: str = "other"       # "warehouse" | "ai" | "other"
+    _drill_day_parent: str = "trend"              # "trend" | "drill_service"
+    _drill_resource_users_parent: str = "drill_day_resource"  # or "drill_warehouse"
     # Becomes True after the user explicitly picks a view, so Select.Changed
     # events fired during the initial mount don't auto-trigger a Snowflake fetch.
     _user_initiated: bool = False
@@ -147,6 +152,32 @@ class CostScreen(Vertical):
         elif self._current_view == "trend":
             self._drill_day = key
             self._fetch_day_drill(key)
+        elif self._current_view == "drill_service":
+            # Date row in service daily trend → full day drill (same chain as Trend)
+            self._drill_day_parent = "drill_service"
+            self._fetch_day_drill(key)
+        elif self._current_view == "drill_warehouse":
+            # Date row in warehouse daily trend → jump to Level 3 (users on that day)
+            self._drill_day = key
+            self._drill_day_service_type = "WAREHOUSE_METERING"
+            self._drill_day_resource_kind = "warehouse"
+            self._drill_resource_users_parent = "drill_warehouse"
+            self._fetch_day_resource_users(key, "WAREHOUSE_METERING", self._drill_warehouse)
+        elif self._current_view == "drill_user":
+            # Warehouse row in user detail → top queries for user+warehouse
+            self._fetch_user_queries(self._drill_user, key)
+        elif self._current_view == "ai":
+            self._fetch_ai_service_users(key)
+        elif self._current_view == "drill_user_queries":
+            try:
+                from textual.widgets import ContentSwitcher, Input
+                from snowglobe.tui.screens.tune import TuneScreen
+                self.app.query_one(ContentSwitcher).current = "tune"
+                tune = self.app.query_one(TuneScreen)
+                tune.query_one("#tu-query-id", Input).value = key
+                self.app.notify(f"Loaded {key[:24]}… into Tune. Press Analyse.", timeout=4)
+            except Exception:
+                self.app.notify(f"Query: {key[:24]}…", timeout=4)
         elif self._current_view == "drill_day":
             self._drill_day_service_type = key
             self._fetch_day_resource_drill(self._drill_day, key)
@@ -217,6 +248,10 @@ class CostScreen(Vertical):
             self._fetch_warehouse_drill(self._drill_warehouse)
         elif self._current_view == "drill_user" and self._drill_user:
             self._fetch_user_drill(self._drill_user)
+        elif self._current_view == "drill_user_queries" and self._drill_user and self._drill_user_warehouse:
+            self._fetch_user_queries(self._drill_user, self._drill_user_warehouse)
+        elif self._current_view == "drill_ai_service" and self._drill_ai_service:
+            self._fetch_ai_service_users(self._drill_ai_service)
         elif self._current_view == "drill_day" and self._drill_day:
             self._fetch_day_drill(self._drill_day)
         elif self._current_view == "drill_day_resource" and self._drill_day and self._drill_day_service_type:
@@ -242,16 +277,30 @@ class CostScreen(Vertical):
         elif self._current_view == "drill_user":
             self._drill_user = None
             self._fetch_users()
+        elif self._current_view == "drill_user_queries":
+            self._drill_user_warehouse = None
+            self._fetch_user_drill(self._drill_user)
+        elif self._current_view == "drill_ai_service":
+            self._drill_ai_service = None
+            self._fetch_ai()
         elif self._current_view == "drill_day":
             self._drill_day = None
             self._drill_day_service_type = None
-            self._fetch_trend()
+            if self._drill_day_parent == "drill_service":
+                self._drill_day_parent = "trend"
+                self._fetch_service_drill(self._drill_service)
+            else:
+                self._fetch_trend()
         elif self._current_view == "drill_day_resource":
             self._drill_day_service_type = None
             self._fetch_day_drill(self._drill_day)
         elif self._current_view == "drill_day_resource_users":
             self._drill_day_resource = None
-            self._fetch_day_resource_drill(self._drill_day, self._drill_day_service_type)
+            if self._drill_resource_users_parent == "drill_warehouse":
+                self._drill_resource_users_parent = "drill_day_resource"
+                self._fetch_warehouse_drill(self._drill_warehouse)
+            else:
+                self._fetch_day_resource_drill(self._drill_day, self._drill_day_service_type)
         elif self._current_view == "drill_day_user_queries":
             self._drill_day_user = None
             self._fetch_day_resource_users(
@@ -416,6 +465,7 @@ class CostScreen(Vertical):
 
     def _fetch_service_drill(self, service_type: str, force: bool = False) -> None:
         self._current_view = "drill_service"
+        self._reset_table()
         self._set_status(f"Loading daily trend for {service_type} ({self._days()}d)…  Esc to return")
         self._drill_worker(service_type=service_type, days=self._days())
 
@@ -429,15 +479,17 @@ class CostScreen(Vertical):
         self.app.call_from_thread(self._render_service_drill, df, service_type, days)
 
     def _render_service_drill(self, df: pd.DataFrame, service_type: str, days: int) -> None:
+        if self._current_view != "drill_service":
+            return
         if df is None or df.empty:
             self._set_status(f"No daily data for {service_type} ({days}d). Esc to return.")
             self._clear_table()
             return
         total = float(df["CREDITS"].sum())
         self._set_status(
-            f"{service_type} daily trend — {days}d  ·  total {total:,.2f}  ·  Esc to return"
+            f"{service_type} daily trend — {days}d  ·  total {total:,.2f}"
+            f"  ·  click date to drill  ·  Esc to return"
         )
-
         table = self.query_one(DataTable)
         self._reset_table()
         table.add_columns("DATE", "CREDITS", "TREND")
@@ -445,7 +497,8 @@ class CostScreen(Vertical):
         for _, row in df.iterrows():
             credits = float(row["CREDITS"])
             ratio = credits / max_c if max_c > 0 else 0
-            table.add_row(str(row["DATE"]), f"{credits:,.2f}", _bar(ratio))
+            table.add_row(str(row["DATE"]), f"{credits:,.2f}", _bar(ratio),
+                          key=str(row["DATE"]))
 
     # --- View 4: Warehouses ------------------------------------------
 
@@ -488,6 +541,7 @@ class CostScreen(Vertical):
 
     def _fetch_warehouse_drill(self, warehouse_name: str) -> None:
         self._current_view = "drill_warehouse"
+        self._reset_table()
         self._set_status(f"Loading daily trend for {warehouse_name} ({self._days()}d)…  Esc to return")
         self._warehouse_drill_worker(warehouse_name=warehouse_name, days=self._days())
 
@@ -501,13 +555,16 @@ class CostScreen(Vertical):
         self.app.call_from_thread(self._render_warehouse_drill, df, warehouse_name, days)
 
     def _render_warehouse_drill(self, df: pd.DataFrame, warehouse_name: str, days: int) -> None:
+        if self._current_view != "drill_warehouse":
+            return
         if df is None or df.empty:
             self._set_status(f"No daily data for {warehouse_name} ({days}d).  Esc to return")
             self._clear_table()
             return
         total = float(df["CREDITS"].sum())
         self._set_status(
-            f"{warehouse_name} daily — {days}d  ·  total {total:,.2f}  ·  Esc to return"
+            f"{warehouse_name} daily — {days}d  ·  total {total:,.2f}"
+            f"  ·  click date to see users  ·  Esc to return"
         )
         table = self.query_one(DataTable)
         self._reset_table()
@@ -516,7 +573,8 @@ class CostScreen(Vertical):
         for _, row in df.iterrows():
             credits = float(row["CREDITS"])
             ratio = credits / max_c if max_c > 0 else 0
-            table.add_row(str(row["DATE"]), f"{credits:,.2f}", _bar(ratio))
+            table.add_row(str(row["DATE"]), f"{credits:,.2f}", _bar(ratio),
+                          key=str(row["DATE"]))
 
     # --- View 5: Users -----------------------------------------------
 
@@ -570,6 +628,7 @@ class CostScreen(Vertical):
 
     def _fetch_user_drill(self, user_name: str) -> None:
         self._current_view = "drill_user"
+        self._reset_table()
         self._set_status(f"Loading warehouse detail for {user_name} ({min(self._days(),7)}d)…  Esc to return")
         self._user_drill_worker(user_name=user_name, days=min(self._days(), 7))
 
@@ -583,6 +642,8 @@ class CostScreen(Vertical):
         self.app.call_from_thread(self._render_user_drill, df, user_name, days, note)
 
     def _render_user_drill(self, df: pd.DataFrame, user_name: str, days: int, note: str | None) -> None:
+        if self._current_view != "drill_user":
+            return
         if df is None or df.empty:
             self._set_status(f"No attribution data for {user_name} ({days}d).  Esc to return")
             self._clear_table()
@@ -590,7 +651,8 @@ class CostScreen(Vertical):
         total = float(df["CREDITS"].sum())
         note_suffix = f"  ·  ⚠ {note}" if note else ""
         self._set_status(
-            f"{user_name} per-warehouse — {days}d  ·  total {total:,.4f}{note_suffix}  ·  Esc to return"
+            f"{user_name} per-warehouse — {days}d  ·  total {total:,.4f}{note_suffix}"
+            f"  ·  click warehouse for top queries  ·  Esc to return"
         )
         no_credits = note is not None
         table = self.query_one(DataTable)
@@ -604,7 +666,110 @@ class CostScreen(Vertical):
                 credits_str,
                 str(int(row.get("QUERY_COUNT", 0))),
                 avg_str,
+                key=str(row.get("WAREHOUSE_NAME", "")),
             )
+
+    # --- Drill: top queries for user+warehouse (from drill_user) -----
+
+    def _fetch_user_queries(self, user_name: str, warehouse_name: str) -> None:
+        self._current_view = "drill_user_queries"
+        self._drill_user_warehouse = warehouse_name
+        self._reset_table()
+        self._set_status(
+            f"Loading top queries for {user_name} on {warehouse_name}…  Esc to return"
+        )
+        self._user_queries_worker(
+            user_name=user_name, warehouse_name=warehouse_name, days=min(self._days(), 7)
+        )
+
+    @work(thread=True, exclusive=True, group="cost")
+    def _user_queries_worker(self, *, user_name: str, warehouse_name: str, days: int) -> None:
+        try:
+            df, note = self.app.get_cost_service().get_user_warehouse_queries(
+                user_name, warehouse_name, days
+            )
+        except Exception as e:
+            self.app.call_from_thread(self._fetch_failed, e)
+            return
+        self.app.call_from_thread(self._render_user_queries, df, user_name, warehouse_name, note)
+
+    def _render_user_queries(
+        self, df: pd.DataFrame, user_name: str, warehouse_name: str, note: str | None
+    ) -> None:
+        if self._current_view != "drill_user_queries":
+            return
+        self._reset_table()
+        table = self.query_one(DataTable)
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
+        if df is None or df.empty:
+            table.add_columns("(no queries found)")
+            self._set_status(
+                f"{user_name} on {warehouse_name}  ·  no queries{note_suffix}  ·  Esc to return"
+            )
+            return
+        table.add_columns("CREDITS", "TYPE", "SECONDS", "GB", "PREVIEW")
+        for _, row in df.iterrows():
+            table.add_row(
+                f"{float(row.get('CREDITS', 0)):,.4f}",
+                str(row.get("QUERY_TYPE", "")),
+                f"{float(row.get('SECONDS', 0)):.1f}",
+                f"{float(row.get('GB_SCANNED', 0)):.2f}",
+                str(row.get("QUERY_PREVIEW", ""))[:48],
+                key=str(row.get("QUERY_ID", "")),
+            )
+        self._set_status(
+            f"Top queries — {user_name} on {warehouse_name}{note_suffix}"
+            f"  ·  ⏎ open in Tune  ·  Esc to return"
+        )
+
+    # --- Drill: users of an AI service (from ai view) ----------------
+
+    def _fetch_ai_service_users(self, service_name: str) -> None:
+        self._current_view = "drill_ai_service"
+        self._drill_ai_service = service_name
+        self._reset_table()
+        self._set_status(
+            f"Loading users for {service_name} ({self._days()}d)…  Esc to return"
+        )
+        self._ai_service_users_worker(service_name=service_name, days=self._days())
+
+    @work(thread=True, exclusive=True, group="cost")
+    def _ai_service_users_worker(self, *, service_name: str, days: int) -> None:
+        try:
+            df, note = self.app.get_cost_service().get_ai_service_users(service_name, days)
+        except Exception as e:
+            self.app.call_from_thread(self._fetch_failed, e)
+            return
+        self.app.call_from_thread(self._render_ai_service_users, df, service_name, days, note)
+
+    def _render_ai_service_users(
+        self, df: pd.DataFrame, service_name: str, days: int, note: str | None
+    ) -> None:
+        if self._current_view != "drill_ai_service":
+            return
+        self._reset_table()
+        table = self.query_one(DataTable)
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
+        if df is None or df.empty:
+            table.add_columns("(no users found)")
+            self._set_status(f"{service_name}  ·  no users{note_suffix}  ·  Esc to return")
+            return
+        total = float(df["CREDITS"].sum())
+        max_c = float(df["CREDITS"].max()) if total > 0 else 1.0
+        table.add_columns("USER", "CREDITS", "REQUESTS", "% OF SERVICE", "BAR")
+        for _, row in df.iterrows():
+            credits = float(row["CREDITS"])
+            pct = (credits / total * 100) if total > 0 else 0
+            table.add_row(
+                str(row["USER_NAME"]),
+                f"{credits:,.4f}",
+                str(int(row.get("REQUESTS", 0))),
+                f"{pct:.1f}%",
+                _bar(credits / max_c),
+            )
+        self._set_status(
+            f"{service_name} users — {days}d  ·  total {total:,.4f}{note_suffix}  ·  Esc to return"
+        )
 
     # --- Drill: day breakdown (Level 1 — service types) --------------
 
