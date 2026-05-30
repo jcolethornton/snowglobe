@@ -50,11 +50,11 @@ class ReportsScreen(Vertical):
                 yield Select(_TYPES, value="full", id="rp-type",
                              classes="form-select", allow_blank=False)
 
-            with Horizontal(classes="form-row"):
+            with Horizontal(classes="form-row", id="rp-days-row"):
                 yield Static("Window:", classes="form-label")
                 yield Input(value="30", id="rp-days", classes="form-input")
 
-            with Horizontal(classes="form-row"):
+            with Horizontal(classes="form-row", id="rp-top-row"):
                 yield Static("Top queries:", classes="form-label")
                 yield Input(value="10", id="rp-top", classes="form-input")
 
@@ -85,7 +85,7 @@ class ReportsScreen(Vertical):
     # --- Lifecycle ----------------------------------------------------
 
     def on_mount(self) -> None:
-        # Username suggester from user_graph (only useful for user reports).
+        self._update_form_visibility("full")
         self.watch(self.app, "user_graph",
                    lambda _v: self._refresh_user_suggester())
 
@@ -104,9 +104,16 @@ class ReportsScreen(Vertical):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "rp-type":
-            # Update the default output path to match the type
-            new_path = _default_path(str(event.value))
-            self.query_one("#rp-path", Input).value = new_path
+            rtype = str(event.value)
+            self.query_one("#rp-path", Input).value = _default_path(rtype)
+            self._update_form_visibility(rtype)
+
+    def _update_form_visibility(self, rtype: str) -> None:
+        is_user = rtype == "user"
+        is_full = rtype == "full"
+        self.query_one("#rp-days-row").display = not is_user
+        self.query_one("#rp-top-row").display = is_full
+        self.query_one("#rp-user-row").display = is_user
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "rp-generate":
