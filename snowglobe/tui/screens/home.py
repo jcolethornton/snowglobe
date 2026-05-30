@@ -48,16 +48,6 @@ class HomeScreen(Vertical):
                 yield Static("loading…",   id="kpi-week", classes="kpi-body")
 
         with Horizontal(id="home-body"):
-            with Vertical(id="home-actions", classes="panel"):
-                yield Static("Quick actions", classes="panel-title")
-                yield Static(
-                    "[a]  Access check\n"
-                    "[w]  Who-access\n"
-                    "[c]  Cost\n"
-                    "\\[s]  Risk scan\n"
-                    "\\[r]  Refresh\n",
-                    classes="actions-list",
-                )
             with Vertical(id="home-queries", classes="panel"):
                 yield Static("Recent expensive queries (7d)", classes="panel-title")
                 yield DataTable(id="home-queries-table",
