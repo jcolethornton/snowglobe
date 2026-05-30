@@ -30,6 +30,18 @@
 
 ---
 
+## AI Costs by User
+
+| User | Functions | Analyst | Agent | Code | Intelligence | Total |
+|---|---:|---:|---:|---:|---:|---:|
+{% for row in ai_users -%}
+| {{ row.USER_NAME }} | {{ "%.2f"|format(row.CORTEX_FUNCTIONS) }} | {{ "%.2f"|format(row.CORTEX_ANALYST) }} | {{ "%.2f"|format(row.CORTEX_AGENT) }} | {{ "%.2f"|format(row.CORTEX_CODE) }} | {{ "%.2f"|format(row.SNOWFLAKE_INTELLIGENCE) }} | {{ "%.2f"|format(row.TOTAL_CREDITS) }} |
+{% else -%}
+*No AI usage in this period.*
+{% endfor -%}
+
+---
+
 ## Storage
 
 | Database | Size (TB) | Est. Monthly Cost |

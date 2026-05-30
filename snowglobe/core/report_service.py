@@ -37,6 +37,11 @@ class ReportService:
         ai_df, _, _ = self.cost_service.get_ai_costs(days)
         ai_total = float(ai_df["TOTAL_CREDITS"].sum()) if not ai_df.empty else 0
 
+        # AI costs by user — exclude zero-cost users
+        ai_users_df, _, _ = self.cost_service.get_ai_costs_by_user(days)
+        if not ai_users_df.empty:
+            ai_users_df = ai_users_df[ai_users_df["TOTAL_CREDITS"] > 0].reset_index(drop=True)
+
         # Storage — exclude databases with no stored data
         storage_df, _ = self.cost_service.get_storage_usage(days)
         if not storage_df.empty:
@@ -58,6 +63,7 @@ class ReportService:
             "cost_total": cost_total,
             "ai_costs": ai_df.to_dict("records") if not ai_df.empty else [],
             "ai_total": ai_total,
+            "ai_users": ai_users_df.to_dict("records") if not ai_users_df.empty else [],
             "storage": storage_df.to_dict("records") if not storage_df.empty else [],
             "storage_total_tb": storage_total_tb,
             "storage_total_cost": storage_total_cost,
