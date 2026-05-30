@@ -365,16 +365,22 @@ Tree > .tree--label-highlighted {
     margin-right: 1;
 }
 
-#tu-sql {
+#tu-sql-scroll {
     height: 1fr;
+}
+
+#tu-sql {
     background: $background;
     padding: 1;
+}
+
+#tu-heuristics-scroll {
+    height: 1fr;
 }
 
 #tu-heuristics {
     padding: 1;
     color: $foreground;
-    height: 1fr;
 }
 
 #tu-insights-table,
@@ -388,11 +394,14 @@ Tree > .tree--label-highlighted {
     height: 1fr;
 }
 
+#tu-ai-scroll {
+    height: 1fr;
+}
+
 #tu-ai {
     background: $background;
     color: $foreground;
     padding: 1;
-    height: 1fr;
 }
 
 /* --- Reports screen --- */
@@ -402,8 +411,11 @@ Tree > .tree--label-highlighted {
     margin-bottom: 1;
 }
 
-#rp-preview {
+#rp-preview-scroll {
     height: 1fr;
+}
+
+#rp-preview {
     background: $background;
     border: round $primary;
     padding: 1;
