@@ -621,6 +621,8 @@ class CostScreen(Vertical):
         self.app.call_from_thread(self._render_day_drill, df, date)
 
     def _render_day_drill(self, df: pd.DataFrame, date: str) -> None:
+        if self._current_view != "drill_day":
+            return  # stale callback — view advanced before this fired
         self._reset_table()
         table = self.query_one(DataTable)
         if df is None or df.empty:
@@ -695,6 +697,8 @@ class CostScreen(Vertical):
 
     def _render_day_resource_drill(self, df: pd.DataFrame, date: str, service_type: str,
                                     label: str, found: bool, note: str | None) -> None:
+        if self._current_view != "drill_day_resource":
+            return  # stale callback
         self._reset_table()
         table = self.query_one(DataTable)
         note_suffix = f"  ·  ⚠ {note}" if note else ""
@@ -753,6 +757,8 @@ class CostScreen(Vertical):
 
     def _render_day_resource_users(self, df: pd.DataFrame, date: str,
                                     resource: str, note: str | None) -> None:
+        if self._current_view != "drill_day_resource_users":
+            return  # stale callback
         self._reset_table()
         table = self.query_one(DataTable)
         note_suffix = f"  ·  ⚠ {note}" if note else ""
@@ -810,6 +816,8 @@ class CostScreen(Vertical):
 
     def _render_day_user_queries(self, df: pd.DataFrame, date: str,
                                   warehouse: str, user: str, note: str | None) -> None:
+        if self._current_view != "drill_day_user_queries":
+            return  # stale callback
         self._reset_table()
         table = self.query_one(DataTable)
         note_suffix = f"  ·  ⚠ {note}" if note else ""
