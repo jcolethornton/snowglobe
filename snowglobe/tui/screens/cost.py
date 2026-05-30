@@ -38,11 +38,12 @@ class CostScreen(Vertical):
 
     # Active view: "summary" | "trend" | "top_queries" | "warehouses" | "users"
     # | "ai" | "ai_users" | "services" | "storage" | "replication" | "mv" | "budget"
-    # | "drill_service" | "drill_warehouse" | "drill_user"
+    # | "drill_service" | "drill_warehouse" | "drill_user" | "drill_day"
     _current_view: str = "summary"
     _drill_service: str | None = None
     _drill_warehouse: str | None = None
     _drill_user: str | None = None
+    _drill_day: str | None = None
     # Becomes True after the user explicitly picks a view, so Select.Changed
     # events fired during the initial mount don't auto-trigger a Snowflake fetch.
     _user_initiated: bool = False
@@ -136,6 +137,9 @@ class CostScreen(Vertical):
         elif self._current_view == "users":
             self._drill_user = key
             self._fetch_user_drill(key)
+        elif self._current_view == "trend":
+            self._drill_day = key
+            self._fetch_day_drill(key)
         elif self._current_view == "top_queries":
             # Hand off to Tune via the App's content switcher.
             try:
@@ -179,6 +183,8 @@ class CostScreen(Vertical):
             self._fetch_warehouse_drill(self._drill_warehouse)
         elif self._current_view == "drill_user" and self._drill_user:
             self._fetch_user_drill(self._drill_user)
+        elif self._current_view == "drill_day" and self._drill_day:
+            self._fetch_day_drill(self._drill_day)
 
     def action_back_from_drill(self) -> None:
         if self._current_view == "drill_service":
@@ -190,6 +196,9 @@ class CostScreen(Vertical):
         elif self._current_view == "drill_user":
             self._drill_user = None
             self._fetch_users()
+        elif self._current_view == "drill_day":
+            self._drill_day = None
+            self._fetch_trend()
 
     # --- Days helper --------------------------------------------------
 
@@ -268,7 +277,7 @@ class CostScreen(Vertical):
         avg = float(df["CREDITS"].mean())
         suffix = f"  ·  cached {cache_age}m ago" if cache_age else ""
         self._set_status(
-            f"Daily trend — {days}d  ·  total {total:,.2f}  ·  avg/day {avg:,.2f}{suffix}"
+            f"Daily trend — {days}d  ·  total {total:,.2f}  ·  avg/day {avg:,.2f}{suffix}  ·  click a date to drill in"
         )
 
         table = self.query_one(DataTable)
@@ -535,6 +544,44 @@ class CostScreen(Vertical):
                 str(int(row.get("QUERY_COUNT", 0))),
                 avg_str,
             )
+
+    # --- Drill: day detail -------------------------------------------
+
+    def _fetch_day_drill(self, date: str) -> None:
+        self._current_view = "drill_day"
+        self._set_status(f"Loading breakdown for {date}…  Esc to return")
+        self._day_drill_worker(date=date)
+
+    @work(thread=True, exclusive=True, group="cost")
+    def _day_drill_worker(self, *, date: str) -> None:
+        try:
+            df = self.app.get_cost_service().get_day_detail(date)
+        except Exception as e:
+            self.app.call_from_thread(self._fetch_failed, e)
+            return
+        self.app.call_from_thread(self._render_day_drill, df, date)
+
+    def _render_day_drill(self, df: pd.DataFrame, date: str) -> None:
+        table = self._reset_table()
+        if df is None or df.empty:
+            table.add_columns("(no warehouse activity on this date)")
+            self._set_status(f"{date}  ·  no data  ·  Esc to return")
+            return
+        total = float(df["CREDITS"].sum())
+        max_c = float(df["CREDITS"].max()) if total > 0 else 1.0
+        table.add_columns("WAREHOUSE", "CREDITS", "% OF DAY", "BAR")
+        for _, row in df.iterrows():
+            credits = float(row["CREDITS"])
+            pct = (credits / total * 100) if total > 0 else 0
+            table.add_row(
+                str(row["WAREHOUSE_NAME"]),
+                f"{credits:,.4f}",
+                f"{pct:.1f}%",
+                _bar(credits / max_c),
+            )
+        self._set_status(
+            f"Day detail — {date}  ·  {total:,.4f} credits  ·  Esc to return"
+        )
 
     # --- View 6: AI services -----------------------------------------
 

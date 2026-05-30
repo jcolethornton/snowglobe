@@ -951,3 +951,23 @@ class CostService:
         except Exception:
             # View may not exist if no MVs are used
             return pd.DataFrame(), None
+
+    def get_day_detail(self, date: str) -> pd.DataFrame:
+        """Warehouse credit breakdown for a single calendar day."""
+        conn = self.context.connect()
+        with conn:
+            rows = conn.query(f"""
+                SELECT WAREHOUSE_NAME,
+                       ROUND(SUM(CREDITS_USED), 4) AS CREDITS
+                FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+                WHERE START_TIME::DATE = '{date}'
+                  AND WAREHOUSE_NAME IS NOT NULL
+                GROUP BY 1
+                ORDER BY 2 DESC
+                LIMIT 30
+            """)
+        if not rows:
+            return pd.DataFrame(columns=["WAREHOUSE_NAME", "CREDITS"])
+        df = pd.DataFrame(rows)
+        df["CREDITS"] = df["CREDITS"].astype(float)
+        return df
