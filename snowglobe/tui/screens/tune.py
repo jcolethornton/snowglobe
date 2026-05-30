@@ -17,7 +17,7 @@ from rich.syntax import Syntax
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
     Button, DataTable, Input, Markdown, Static, TabbedContent, TabPane, Tree,
 )
@@ -65,11 +65,12 @@ class TuneScreen(Vertical):
                         with Horizontal(classes="actions-row"):
                             yield Button("Generate AI suggestion (Cortex)",
                                          id="tu-ai-run", variant="warning")
-                        yield Markdown(
-                            "AI suggestions will appear here after you Analyse "
-                            "and then click Generate.",
-                            id="tu-ai",
-                        )
+                        with VerticalScroll(id="tu-ai-scroll"):
+                            yield Markdown(
+                                "AI suggestions will appear here after you Analyse "
+                                "and then click Generate.",
+                                id="tu-ai",
+                            )
 
     # --- Events -------------------------------------------------------
 

@@ -14,7 +14,7 @@ from typing import Any
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, Input, Markdown, Select, Static
 
@@ -76,10 +76,11 @@ class ReportsScreen(Vertical):
             "Preview will appear here after Generate. Save writes to the output path.",
             id="rp-status", classes="hint",
         )
-        yield Markdown(
-            "No report yet — fill the form and click Generate.",
-            id="rp-preview",
-        )
+        with VerticalScroll(id="rp-preview-scroll"):
+            yield Markdown(
+                "No report yet — fill the form and click Generate.",
+                id="rp-preview",
+            )
 
     # --- Lifecycle ----------------------------------------------------
 
