@@ -606,6 +606,7 @@ class CostScreen(Vertical):
     # --- Drill: day breakdown (Level 1 — service types) --------------
 
     def _fetch_day_drill(self, date: str) -> None:
+        self._drill_day = date  # always set — this may be called from home.py or back-nav
         self._current_view = "drill_day"
         self._set_status(f"Loading service breakdown for {date}…  Esc to return")
         self._day_drill_worker(date=date)
