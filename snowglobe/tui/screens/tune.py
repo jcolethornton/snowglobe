@@ -46,13 +46,15 @@ class TuneScreen(Vertical):
         with Horizontal(id="tu-body"):
             with Vertical(id="tu-sql-pane", classes="panel"):
                 yield Static("SQL", classes="panel-title")
-                yield Static("Run an analysis to see SQL here.",
-                             id="tu-sql", classes="sql-pane")
+                with VerticalScroll(id="tu-sql-scroll"):
+                    yield Static("Run an analysis to see SQL here.",
+                                 id="tu-sql", classes="sql-pane")
             with Vertical(id="tu-analysis-pane", classes="panel"):
                 yield Static("Analysis", classes="panel-title")
                 with TabbedContent(initial="tu-tab-heuristics"):
                     with TabPane("Heuristics", id="tu-tab-heuristics"):
-                        yield Static("Pending.", id="tu-heuristics")
+                        with VerticalScroll(id="tu-heuristics-scroll"):
+                            yield Static("Pending.", id="tu-heuristics")
                     with TabPane("Insights", id="tu-tab-insights"):
                         yield DataTable(id="tu-insights-table",
                                         cursor_type="row", zebra_stripes=True)
