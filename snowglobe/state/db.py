@@ -158,7 +158,15 @@ class StateDB:
     def set_json_cache(self, key: str, data: list[dict]):
         """Store a list of dicts as JSON in metadata."""
         import json
-        self.set_metadata(key, json.dumps(data))
+        from decimal import Decimal
+
+        class _Encoder(json.JSONEncoder):
+            def default(self, o):
+                if isinstance(o, Decimal):
+                    return float(o)
+                return super().default(o)
+
+        self.set_metadata(key, json.dumps(data, cls=_Encoder))
 
     def get_refreshed_at(self) -> Optional[str]:
         return self.get_metadata("refreshed_at")
