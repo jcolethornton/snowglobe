@@ -46,7 +46,7 @@ class HomeScreen(Vertical):
             with Vertical(id="home-trend", classes="panel"):
                 yield Static("30d spend trend", classes="panel-title")
                 yield DataTable(id="home-trend-table",
-                                cursor_type="none", zebra_stripes=True)
+                                cursor_type="row", zebra_stripes=True)
             with Vertical(id="home-queries", classes="panel"):
                 yield Static("Recent expensive queries (7d)", classes="panel-title")
                 yield DataTable(id="home-queries-table",
@@ -193,6 +193,7 @@ class HomeScreen(Vertical):
                 str(row["DATE"]),
                 f"{credits:,.2f}",
                 "█" * bar_width,
+                key=str(row["DATE"]),
             )
 
     # --- Recent expensive queries (one Snowflake call on mount) -----
@@ -229,17 +230,27 @@ class HomeScreen(Vertical):
             )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        # Drill: open the query in the Tune screen.
         key = event.row_key.value if event.row_key else None
         if not key:
             return
-        try:
-            from textual.widgets import ContentSwitcher, Input
-            from snowglobe.tui.screens.tune import TuneScreen
-            switcher = self.app.query_one(ContentSwitcher)
-            switcher.current = "tune"
-            tune = self.app.query_one(TuneScreen)
-            tune.query_one("#tu-query-id", Input).value = key
-            self.app.notify(f"Loaded {key[:24]}… into Tune. Press Analyse.", timeout=4)
-        except Exception:
-            self.app.notify(f"Query: {key[:24]}…", timeout=4)
+
+        if event.data_table.id == "home-trend-table":
+            # Drill into that day on the Cost screen.
+            try:
+                from textual.widgets import ContentSwitcher
+                from snowglobe.tui.screens.cost import CostScreen
+                self.app.query_one(ContentSwitcher).current = "cost"
+                self.app.query_one(CostScreen)._fetch_day_drill(key)
+            except Exception as e:
+                self.app.notify(f"Could not open day detail: {e}", severity="warning", timeout=4)
+        else:
+            # Queries table — open in Tune.
+            try:
+                from textual.widgets import ContentSwitcher, Input
+                from snowglobe.tui.screens.tune import TuneScreen
+                self.app.query_one(ContentSwitcher).current = "tune"
+                tune = self.app.query_one(TuneScreen)
+                tune.query_one("#tu-query-id", Input).value = key
+                self.app.notify(f"Loaded {key[:24]}… into Tune. Press Analyse.", timeout=4)
+            except Exception:
+                self.app.notify(f"Query: {key[:24]}…", timeout=4)
