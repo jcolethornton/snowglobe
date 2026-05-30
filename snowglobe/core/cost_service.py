@@ -830,19 +830,20 @@ class CostService:
 
     # --- Budget status (Snowflake-native budgets) ---
 
-    def get_budget_status(self) -> tuple[pd.DataFrame, str | None]:
+    def get_budget_status(self, days: int = 30) -> tuple[pd.DataFrame, str | None]:
         """
         Surface Snowflake-native budget status.
-        Calls the account root budget spending history and lists custom budgets.
+        GET_SPENDING_HISTORY is a stored procedure, not a table function — must use CALL.
         Returns (df, error_message) — error_message is set if budgets are not activated.
         """
         conn = self.context.connect()
         try:
             with conn:
-                # Get spending history from account budget
-                rows = conn.query("""
-                    SELECT *
-                    FROM TABLE(SNOWFLAKE.LOCAL.ACCOUNT_ROOT_BUDGET!GET_SPENDING_HISTORY())
+                rows = conn.query(f"""
+                    CALL SNOWFLAKE.LOCAL.ACCOUNT_ROOT_BUDGET!GET_SPENDING_HISTORY(
+                        TIME_LOWER_BOUND => DATEADD('days', -{int(days)}, CURRENT_TIMESTAMP()),
+                        TIME_UPPER_BOUND => CURRENT_TIMESTAMP()
+                    )
                 """)
             df = pd.DataFrame(rows)
             return df, None
