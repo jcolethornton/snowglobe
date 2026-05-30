@@ -20,6 +20,8 @@ from textual.widgets import Button, DataTable, Label, ListItem, ListView, Select
 
 
 _BAR_WIDTH = 24  # max █ characters in trend column
+_WAREHOUSE_SERVICE_TYPE = "WAREHOUSE_METERING"
+_AI_SERVICE_KEYWORDS = ("AI", "CORTEX", "INTELLIGENCE")
 
 
 def _bar(pct_or_ratio: float, width: int = _BAR_WIDTH) -> str:
@@ -38,12 +40,16 @@ class CostScreen(Vertical):
 
     # Active view: "summary" | "trend" | "top_queries" | "warehouses" | "users"
     # | "ai" | "ai_users" | "services" | "storage" | "replication" | "mv" | "budget"
-    # | "drill_service" | "drill_warehouse" | "drill_user" | "drill_day"
+    # | "drill_service" | "drill_warehouse" | "drill_user"
+    # | "drill_day" | "drill_day_resource" | "drill_day_resource_users" | "drill_day_user_queries"
     _current_view: str = "summary"
     _drill_service: str | None = None
     _drill_warehouse: str | None = None
     _drill_user: str | None = None
     _drill_day: str | None = None
+    _drill_day_service_type: str | None = None
+    _drill_day_resource: str | None = None
+    _drill_day_user: str | None = None
     # Becomes True after the user explicitly picks a view, so Select.Changed
     # events fired during the initial mount don't auto-trigger a Snowflake fetch.
     _user_initiated: bool = False
@@ -140,6 +146,38 @@ class CostScreen(Vertical):
         elif self._current_view == "trend":
             self._drill_day = key
             self._fetch_day_drill(key)
+        elif self._current_view == "drill_day":
+            self._drill_day_service_type = key
+            self._fetch_day_resource_drill(self._drill_day, key)
+        elif self._current_view == "drill_day_resource":
+            upper = (self._drill_day_service_type or "").upper()
+            can_drill = (
+                upper == _WAREHOUSE_SERVICE_TYPE
+                or any(kw in upper for kw in _AI_SERVICE_KEYWORDS)
+            )
+            if can_drill:
+                self._fetch_day_resource_users(
+                    self._drill_day, self._drill_day_service_type, key
+                )
+            else:
+                self.app.notify(
+                    "No user-level detail available for this resource type.", timeout=3
+                )
+        elif self._current_view == "drill_day_resource_users":
+            if (self._drill_day_service_type or "").upper() == _WAREHOUSE_SERVICE_TYPE:
+                self._fetch_day_user_queries(self._drill_day, self._drill_day_resource, key)
+            else:
+                self.app.notify("No query detail available for AI services.", timeout=3)
+        elif self._current_view == "drill_day_user_queries":
+            try:
+                from textual.widgets import ContentSwitcher, Input
+                from snowglobe.tui.screens.tune import TuneScreen
+                self.app.query_one(ContentSwitcher).current = "tune"
+                tune = self.app.query_one(TuneScreen)
+                tune.query_one("#tu-query-id", Input).value = key
+                self.app.notify(f"Loaded {key[:24]}… into Tune. Press Analyse.", timeout=4)
+            except Exception:
+                self.app.notify(f"Query: {key[:24]}…", timeout=4)
         elif self._current_view == "top_queries":
             # Hand off to Tune via the App's content switcher.
             try:
@@ -185,6 +223,18 @@ class CostScreen(Vertical):
             self._fetch_user_drill(self._drill_user)
         elif self._current_view == "drill_day" and self._drill_day:
             self._fetch_day_drill(self._drill_day)
+        elif self._current_view == "drill_day_resource" and self._drill_day and self._drill_day_service_type:
+            self._fetch_day_resource_drill(self._drill_day, self._drill_day_service_type)
+        elif (self._current_view == "drill_day_resource_users"
+              and self._drill_day and self._drill_day_service_type and self._drill_day_resource):
+            self._fetch_day_resource_users(
+                self._drill_day, self._drill_day_service_type, self._drill_day_resource
+            )
+        elif (self._current_view == "drill_day_user_queries"
+              and self._drill_day and self._drill_day_resource and self._drill_day_user):
+            self._fetch_day_user_queries(
+                self._drill_day, self._drill_day_resource, self._drill_day_user
+            )
 
     def action_back_from_drill(self) -> None:
         if self._current_view == "drill_service":
@@ -198,7 +248,19 @@ class CostScreen(Vertical):
             self._fetch_users()
         elif self._current_view == "drill_day":
             self._drill_day = None
+            self._drill_day_service_type = None
             self._fetch_trend()
+        elif self._current_view == "drill_day_resource":
+            self._drill_day_service_type = None
+            self._fetch_day_drill(self._drill_day)
+        elif self._current_view == "drill_day_resource_users":
+            self._drill_day_resource = None
+            self._fetch_day_resource_drill(self._drill_day, self._drill_day_service_type)
+        elif self._current_view == "drill_day_user_queries":
+            self._drill_day_user = None
+            self._fetch_day_resource_users(
+                self._drill_day, self._drill_day_service_type, self._drill_day_resource
+            )
 
     # --- Days helper --------------------------------------------------
 
@@ -545,17 +607,17 @@ class CostScreen(Vertical):
                 avg_str,
             )
 
-    # --- Drill: day detail -------------------------------------------
+    # --- Drill: day breakdown (Level 1 — service types) --------------
 
     def _fetch_day_drill(self, date: str) -> None:
         self._current_view = "drill_day"
-        self._set_status(f"Loading breakdown for {date}…  Esc to return")
+        self._set_status(f"Loading service breakdown for {date}…  Esc to return")
         self._day_drill_worker(date=date)
 
     @work(thread=True, exclusive=True, group="cost")
     def _day_drill_worker(self, *, date: str) -> None:
         try:
-            df = self.app.get_cost_service().get_day_detail(date)
+            df = self.app.get_cost_service().get_day_service_breakdown(date)
         except Exception as e:
             self.app.call_from_thread(self._fetch_failed, e)
             return
@@ -565,23 +627,195 @@ class CostScreen(Vertical):
         self._reset_table()
         table = self.query_one(DataTable)
         if df is None or df.empty:
-            table.add_columns("(no warehouse activity on this date)")
+            table.add_columns("(no activity on this date)")
             self._set_status(f"{date}  ·  no data  ·  Esc to return")
             return
         total = float(df["CREDITS"].sum())
         max_c = float(df["CREDITS"].max()) if total > 0 else 1.0
-        table.add_columns("WAREHOUSE", "CREDITS", "% OF DAY", "BAR")
+        table.add_columns("SERVICE TYPE", "CREDITS", "% OF DAY", "BAR")
         for _, row in df.iterrows():
             credits = float(row["CREDITS"])
             pct = (credits / total * 100) if total > 0 else 0
             table.add_row(
-                str(row["WAREHOUSE_NAME"]),
+                str(row["SERVICE_TYPE"]),
                 f"{credits:,.4f}",
                 f"{pct:.1f}%",
                 _bar(credits / max_c),
+                key=str(row["SERVICE_TYPE"]),
             )
         self._set_status(
-            f"Day detail — {date}  ·  {total:,.4f} credits  ·  Esc to return"
+            f"Day breakdown — {date}  ·  {total:,.4f} credits  ·  click a service to drill  ·  Esc to return"
+        )
+
+    # --- Drill: resource breakdown (Level 2 — all service types) -----
+
+    def _fetch_day_resource_drill(self, date: str, service_type: str) -> None:
+        self._current_view = "drill_day_resource"
+        self._drill_day_service_type = service_type
+        self._set_status(f"Loading {service_type} breakdown for {date}…  Esc to return")
+        upper = service_type.upper()
+        is_ai = any(kw in upper for kw in _AI_SERVICE_KEYWORDS)
+        self._day_resource_drill_worker(date=date, service_type=service_type, is_ai=is_ai)
+
+    @work(thread=True, exclusive=True, group="cost")
+    def _day_resource_drill_worker(self, *, date: str, service_type: str, is_ai: bool) -> None:
+        try:
+            svc = self.app.get_cost_service()
+            if is_ai:
+                df, any_missing = svc.get_day_ai_breakdown(date)
+                label = "AI Service"
+                found = True
+                note = "some Cortex views unavailable" if any_missing else None
+            else:
+                df, label, found = svc.get_day_resource_breakdown(date, service_type)
+                note = None
+        except Exception as e:
+            self.app.call_from_thread(self._fetch_failed, e)
+            return
+        self.app.call_from_thread(
+            self._render_day_resource_drill, df, date, service_type, label, found, note
+        )
+
+    def _render_day_resource_drill(self, df: pd.DataFrame, date: str, service_type: str,
+                                    label: str, found: bool, note: str | None) -> None:
+        self._reset_table()
+        table = self.query_one(DataTable)
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
+        if not found:
+            table.add_columns("(no detail available for this service type)")
+            self._set_status(
+                f"{service_type} — {date}  ·  no resource detail available  ·  Esc to return"
+            )
+            return
+        if df is None or df.empty:
+            table.add_columns(f"(no {label.lower()} activity on this date)")
+            self._set_status(f"{service_type} — {date}  ·  no data{note_suffix}  ·  Esc to return")
+            return
+        total = float(df["CREDITS"].sum())
+        max_c = float(df["CREDITS"].max()) if total > 0 else 1.0
+        has_requests = "REQUEST_COUNT" in df.columns
+        if has_requests:
+            table.add_columns(label.upper(), "CREDITS", "REQUESTS", "% OF SERVICE", "BAR")
+        else:
+            table.add_columns(label.upper(), "CREDITS", "% OF SERVICE", "BAR")
+        for _, row in df.iterrows():
+            credits = float(row["CREDITS"])
+            pct = (credits / total * 100) if total > 0 else 0
+            cells = [str(row["RESOURCE_NAME"]), f"{credits:,.4f}"]
+            if has_requests:
+                cells.append(str(int(row.get("REQUEST_COUNT", 0))))
+            cells += [f"{pct:.1f}%", _bar(credits / max_c)]
+            table.add_row(*cells, key=str(row["RESOURCE_NAME"]))
+        upper = service_type.upper()
+        can_drill_users = (
+            upper == _WAREHOUSE_SERVICE_TYPE
+            or any(kw in upper for kw in _AI_SERVICE_KEYWORDS)
+        )
+        user_hint = "  ·  click to see users" if can_drill_users else ""
+        self._set_status(
+            f"{service_type} — {date}  ·  {total:,.4f} credits{note_suffix}{user_hint}  ·  Esc to return"
+        )
+
+    # --- Drill: user breakdown (Level 3) -----------------------------
+
+    def _fetch_day_resource_users(self, date: str, service_type: str, resource: str) -> None:
+        self._current_view = "drill_day_resource_users"
+        self._drill_day_resource = resource
+        self._set_status(f"Loading users for {resource} on {date}…  Esc to return")
+        self._day_resource_users_worker(date=date, service_type=service_type, resource=resource)
+
+    @work(thread=True, exclusive=True, group="cost")
+    def _day_resource_users_worker(self, *, date: str, service_type: str, resource: str) -> None:
+        try:
+            df, note = self.app.get_cost_service().get_day_resource_users(
+                date, service_type, resource
+            )
+        except Exception as e:
+            self.app.call_from_thread(self._fetch_failed, e)
+            return
+        self.app.call_from_thread(self._render_day_resource_users, df, date, resource, note)
+
+    def _render_day_resource_users(self, df: pd.DataFrame, date: str,
+                                    resource: str, note: str | None) -> None:
+        self._reset_table()
+        table = self.query_one(DataTable)
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
+        if note and "No user-level" in note:
+            table.add_columns("(no user-level detail available for this resource type)")
+            self._set_status(f"{resource} — {date}{note_suffix}  ·  Esc to return")
+            return
+        if df is None or df.empty:
+            table.add_columns("(no users found)")
+            self._set_status(f"{resource} — {date}  ·  no users{note_suffix}  ·  Esc to return")
+            return
+        total = float(df["CREDITS"].sum())
+        max_c = float(df["CREDITS"].max()) if total > 0 else 1.0
+        table.add_columns("USER", "CREDITS", "QUERIES", "% OF RESOURCE", "BAR")
+        for _, row in df.iterrows():
+            credits = float(row["CREDITS"])
+            pct = (credits / total * 100) if total > 0 else 0
+            table.add_row(
+                str(row["USER_NAME"]),
+                f"{credits:,.4f}",
+                str(int(row.get("REQUESTS", 0))),
+                f"{pct:.1f}%",
+                _bar(credits / max_c),
+                key=str(row["USER_NAME"]),
+            )
+        query_hint = (
+            "  ·  click user to see top queries"
+            if (self._drill_day_service_type or "").upper() == _WAREHOUSE_SERVICE_TYPE
+            else ""
+        )
+        self._set_status(
+            f"{resource} users — {date}  ·  {total:,.4f} credits{note_suffix}{query_hint}  ·  Esc to return"
+        )
+
+    # --- Drill: top queries for a user (Level 4) ----------------------
+
+    def _fetch_day_user_queries(self, date: str, warehouse: str, user: str) -> None:
+        self._current_view = "drill_day_user_queries"
+        self._drill_day_user = user
+        self._set_status(
+            f"Loading top queries for {user} on {warehouse} ({date})…  Esc to return"
+        )
+        self._day_user_queries_worker(date=date, warehouse=warehouse, user=user)
+
+    @work(thread=True, exclusive=True, group="cost")
+    def _day_user_queries_worker(self, *, date: str, warehouse: str, user: str) -> None:
+        try:
+            df, note = self.app.get_cost_service().get_day_user_queries(
+                date, warehouse, user, limit=3
+            )
+        except Exception as e:
+            self.app.call_from_thread(self._fetch_failed, e)
+            return
+        self.app.call_from_thread(self._render_day_user_queries, df, date, warehouse, user, note)
+
+    def _render_day_user_queries(self, df: pd.DataFrame, date: str,
+                                  warehouse: str, user: str, note: str | None) -> None:
+        self._reset_table()
+        table = self.query_one(DataTable)
+        note_suffix = f"  ·  ⚠ {note}" if note else ""
+        if df is None or df.empty:
+            table.add_columns("(no queries found)")
+            self._set_status(
+                f"{user} on {warehouse} — {date}  ·  no queries{note_suffix}  ·  Esc to return"
+            )
+            return
+        table.add_columns("CREDITS", "TYPE", "SECONDS", "GB", "PREVIEW")
+        for _, row in df.iterrows():
+            table.add_row(
+                f"{float(row.get('CREDITS', 0)):,.4f}",
+                str(row.get("QUERY_TYPE", "")),
+                f"{float(row.get('SECONDS', 0)):.1f}",
+                f"{float(row.get('GB_SCANNED', 0)):.2f}",
+                str(row.get("QUERY_PREVIEW", ""))[:48],
+                key=str(row.get("QUERY_ID", "")),
+            )
+        self._set_status(
+            f"Top queries — {user} on {warehouse} — {date}{note_suffix}"
+            f"  ·  ⏎ open in Tune  ·  Esc to return"
         )
 
     # --- View 6: AI services -----------------------------------------
