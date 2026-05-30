@@ -1171,7 +1171,7 @@ class CostService:
         d = _sq(date)
         svc_upper = service_type.upper()
 
-        if svc_upper == "WAREHOUSE_METERING":
+        if "WAREHOUSE" in svc_upper:
             safe_wh = _sq(resource)
             conn = self.context.connect()
             try:

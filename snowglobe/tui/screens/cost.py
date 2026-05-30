@@ -649,13 +649,28 @@ class CostScreen(Vertical):
     def _fetch_day_resource_drill(self, date: str, service_type: str) -> None:
         self._current_view = "drill_day_resource"
         self._drill_day_service_type = service_type
-        self._set_status(f"Loading {service_type} breakdown for {date}…  Esc to return")
         upper = service_type.upper()
         is_ai = any(kw in upper for kw in _AI_SERVICE_KEYWORDS)
-        self._day_resource_drill_worker(date=date, service_type=service_type, is_ai=is_ai)
+        is_warehouse = "WAREHOUSE" in upper
+        # Set kind synchronously — before async work — so navigation is correct
+        # even if the worker fails and the render never fires.
+        if is_ai:
+            self._drill_day_resource_kind = "ai"
+        elif is_warehouse:
+            self._drill_day_resource_kind = "warehouse"
+        else:
+            self._drill_day_resource_kind = "other"
+        # Clear table immediately so stale Level 1 rows can't be clicked while loading.
+        self._reset_table()
+        self._set_status(f"Loading {service_type} breakdown for {date}…  Esc to return")
+        self._day_resource_drill_worker(
+            date=date, service_type=service_type, is_ai=is_ai, is_warehouse=is_warehouse
+        )
 
     @work(thread=True, exclusive=True, group="cost")
-    def _day_resource_drill_worker(self, *, date: str, service_type: str, is_ai: bool) -> None:
+    def _day_resource_drill_worker(
+        self, *, date: str, service_type: str, is_ai: bool, is_warehouse: bool
+    ) -> None:
         try:
             svc = self.app.get_cost_service()
             if is_ai:
@@ -663,6 +678,11 @@ class CostScreen(Vertical):
                 label = "AI Service"
                 found = True
                 note = "some Cortex views unavailable" if any_missing else None
+            elif is_warehouse:
+                df = svc.get_day_warehouse_breakdown(date)
+                label = "Warehouse"
+                found = True
+                note = None
             else:
                 df, label, found = svc.get_day_resource_breakdown(date, service_type)
                 note = None
@@ -670,20 +690,11 @@ class CostScreen(Vertical):
             self.app.call_from_thread(self._fetch_failed, e)
             return
         self.app.call_from_thread(
-            self._render_day_resource_drill, df, date, service_type, label, found, note, is_ai
+            self._render_day_resource_drill, df, date, service_type, label, found, note
         )
 
     def _render_day_resource_drill(self, df: pd.DataFrame, date: str, service_type: str,
-                                    label: str, found: bool, note: str | None,
-                                    is_ai: bool = False) -> None:
-        # Store kind so navigation decisions don't depend on the SERVICE_TYPE string.
-        if is_ai:
-            self._drill_day_resource_kind = "ai"
-        elif label == "Warehouse":
-            self._drill_day_resource_kind = "warehouse"
-        else:
-            self._drill_day_resource_kind = "other"
-
+                                    label: str, found: bool, note: str | None) -> None:
         self._reset_table()
         table = self.query_one(DataTable)
         note_suffix = f"  ·  ⚠ {note}" if note else ""
