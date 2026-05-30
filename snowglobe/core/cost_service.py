@@ -849,8 +849,17 @@ class CostService:
             return df, None
         except Exception as e:
             err_msg = str(e)
-            if "not activated" in err_msg.lower() or "does not exist" in err_msg.lower():
-                return pd.DataFrame(), "Budgets are not activated on this account. Use Snowsight or CALL SNOWFLAKE.LOCAL.ACCOUNT_ROOT_BUDGET!ACTIVATE() to enable."
+            not_activated = (
+                "ACCOUNT_ROOT_BUDGET_NOT_ACTIVATED" in err_msg
+                or "not activated" in err_msg.lower()
+                or "does not exist" in err_msg.lower()
+            )
+            if not_activated:
+                return pd.DataFrame(), (
+                    "Snowflake budgets are not activated on this account.\n\n"
+                    "To enable, run the following in a Snowsight worksheet as ACCOUNTADMIN:\n\n"
+                    "  CALL SNOWFLAKE.LOCAL.ACCOUNT_ROOT_BUDGET!ACTIVATE();"
+                )
             return pd.DataFrame(), f"Could not retrieve budget status: {err_msg}"
 
     # --- Replication costs ---
