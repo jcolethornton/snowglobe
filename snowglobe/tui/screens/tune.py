@@ -249,6 +249,7 @@ class TuneScreen(Vertical):
         self.query_one("#tu-ai-run", Button).disabled = False
         self.app.notify(f"AI generation failed: {err}", severity="error", timeout=8)
 
-    def _render_ai(self, text: str) -> None:
-        self.query_one("#tu-ai", Markdown).update(text or "(empty AI response)")
+    def _render_ai(self, text) -> None:
+        from snowglobe.output.cli import format_ai_suggestion
+        self.query_one("#tu-ai", Markdown).update(format_ai_suggestion(text) or "(empty AI response)")
         self.query_one("#tu-ai-run", Button).disabled = False

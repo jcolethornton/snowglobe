@@ -1321,6 +1321,13 @@ def _cmd_optimize(ctx: SnowglobeContext, args: list):
     opt_exp = optimizer_service.expensive_operators()
     typer.echo(cli.format_expensive_operators(opt_exp))
 
+    typer.echo("\nGenerating AI suggestions (Cortex)…")
+    try:
+        ai = optimizer_service.ai_suggestion()
+        cli.print_ai_suggestion(ai)
+    except Exception as e:
+        typer.secho(f"  AI suggestion failed: {e}", fg=typer.colors.YELLOW)
+
 
 def _cmd_status(ctx: SnowglobeContext, args: list):
     """Show current shell working state."""

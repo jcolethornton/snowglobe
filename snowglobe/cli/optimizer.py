@@ -51,7 +51,7 @@ def query(
     if not no_ai:
         typer.echo("\nGenerating AI suggestions...")
         ai = optimizer_service.ai_suggestion(model=model)
-        typer.echo(ai)
+        cli.print_ai_suggestion(ai)
 
 
 @opt_app.command()

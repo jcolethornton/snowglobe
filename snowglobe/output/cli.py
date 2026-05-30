@@ -311,6 +311,57 @@ def format_query_insights(query_id, insights):
     return output
 
 
+def format_ai_suggestion(result) -> str:
+    """
+    Convert the Cortex AI result (dict or string) to readable Markdown.
+    Safe to pass to a Textual Markdown widget or print as plain text.
+    """
+    import json
+
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, ValueError):
+            return result  # plain message — "No AI suggestions", error text, etc.
+
+    if not isinstance(result, dict):
+        return str(result)
+
+    lines = ["## AI Optimization Suggestions", ""]
+
+    summary = result.get("summary", "")
+    if summary:
+        lines += ["**Summary**", "", summary, ""]
+
+    for i, opt in enumerate(result.get("optimizations", []), 1):
+        problem = opt.get("problem", "")
+        solution = opt.get("solution", "")
+        explanation = opt.get("explanation", "")
+        sql = opt.get("sql", "").strip()
+
+        lines += ["---", "", f"### {i}. {problem}", ""]
+        if solution:
+            lines += [f"**Solution:** {solution}", ""]
+        if explanation:
+            lines += [f"**Explanation:** {explanation}", ""]
+        if sql:
+            lines += ["```sql", sql, "```", ""]
+
+    improvement = result.get("expected_improvement", "")
+    if improvement:
+        lines += ["---", "", f"**Expected Improvement:** {improvement}"]
+
+    return "\n".join(lines)
+
+
+def print_ai_suggestion(result) -> None:
+    """Render the AI suggestion as formatted Markdown in the terminal via Rich."""
+    from rich.console import Console
+    from rich.markdown import Markdown as RichMarkdown
+
+    Console().print(RichMarkdown(format_ai_suggestion(result)))
+
+
 def format_drift_text(drift: dict) -> str:
     """Format access drift detection results."""
     if drift.get("error"):
