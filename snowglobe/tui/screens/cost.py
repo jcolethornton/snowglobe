@@ -562,7 +562,8 @@ class CostScreen(Vertical):
         self.app.call_from_thread(self._render_day_drill, df, date)
 
     def _render_day_drill(self, df: pd.DataFrame, date: str) -> None:
-        table = self._reset_table()
+        self._reset_table()
+        table = self.query_one(DataTable)
         if df is None or df.empty:
             table.add_columns("(no warehouse activity on this date)")
             self._set_status(f"{date}  ·  no data  ·  Esc to return")
