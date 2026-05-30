@@ -1,6 +1,6 @@
 [project]
 name = "snowglobe-cli"
-version = "0.2.0"
+version = "0.2.1"
 description = "Explainable cost and access visibility for Snowflake"
 readme = "README.md"
 requires-python = ">=3.12.3"
