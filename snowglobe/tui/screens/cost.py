@@ -313,6 +313,7 @@ class CostScreen(Vertical):
 
     def _fetch_trend(self, force: bool = False) -> None:
         self._current_view = "trend"
+        self._reset_table()
         self._set_status(f"Loading daily trend ({self._days()}d)…")
         self._trend_worker(days=self._days(), force=force)
 
@@ -326,6 +327,8 @@ class CostScreen(Vertical):
         self.app.call_from_thread(self._render_trend, df, days, cache_age)
 
     def _render_trend(self, df: pd.DataFrame, days: int, cache_age: int | None) -> None:
+        if self._current_view != "trend":
+            return  # stale callback
         if df is None or df.empty:
             self._set_status("No trend data found.")
             self._clear_table()
@@ -608,6 +611,7 @@ class CostScreen(Vertical):
     def _fetch_day_drill(self, date: str) -> None:
         self._drill_day = date  # always set — this may be called from home.py or back-nav
         self._current_view = "drill_day"
+        self._reset_table()  # clear immediately so stale rows can't be re-clicked while loading
         self._set_status(f"Loading service breakdown for {date}…  Esc to return")
         self._day_drill_worker(date=date)
 
@@ -741,6 +745,7 @@ class CostScreen(Vertical):
     def _fetch_day_resource_users(self, date: str, service_type: str, resource: str) -> None:
         self._current_view = "drill_day_resource_users"
         self._drill_day_resource = resource
+        self._reset_table()
         self._set_status(f"Loading users for {resource} on {date}…  Esc to return")
         self._day_resource_users_worker(date=date, service_type=service_type, resource=resource)
 
@@ -798,6 +803,7 @@ class CostScreen(Vertical):
     def _fetch_day_user_queries(self, date: str, warehouse: str, user: str) -> None:
         self._current_view = "drill_day_user_queries"
         self._drill_day_user = user
+        self._reset_table()
         self._set_status(
             f"Loading top queries for {user} on {warehouse} ({date})…  Esc to return"
         )
