@@ -50,6 +50,7 @@ class CostScreen(Vertical):
     _drill_day_service_type: str | None = None
     _drill_day_resource: str | None = None
     _drill_day_user: str | None = None
+    _drill_day_resource_kind: str = "other"  # "warehouse" | "ai" | "other"
     # Becomes True after the user explicitly picks a view, so Select.Changed
     # events fired during the initial mount don't auto-trigger a Snowflake fetch.
     _user_initiated: bool = False
@@ -150,12 +151,7 @@ class CostScreen(Vertical):
             self._drill_day_service_type = key
             self._fetch_day_resource_drill(self._drill_day, key)
         elif self._current_view == "drill_day_resource":
-            upper = (self._drill_day_service_type or "").upper()
-            can_drill = (
-                upper == _WAREHOUSE_SERVICE_TYPE
-                or any(kw in upper for kw in _AI_SERVICE_KEYWORDS)
-            )
-            if can_drill:
+            if self._drill_day_resource_kind in ("warehouse", "ai"):
                 self._fetch_day_resource_users(
                     self._drill_day, self._drill_day_service_type, key
                 )
@@ -164,7 +160,7 @@ class CostScreen(Vertical):
                     "No user-level detail available for this resource type.", timeout=3
                 )
         elif self._current_view == "drill_day_resource_users":
-            if (self._drill_day_service_type or "").upper() == _WAREHOUSE_SERVICE_TYPE:
+            if self._drill_day_resource_kind == "warehouse":
                 self._fetch_day_user_queries(self._drill_day, self._drill_day_resource, key)
             else:
                 self.app.notify("No query detail available for AI services.", timeout=3)
@@ -673,11 +669,20 @@ class CostScreen(Vertical):
             self.app.call_from_thread(self._fetch_failed, e)
             return
         self.app.call_from_thread(
-            self._render_day_resource_drill, df, date, service_type, label, found, note
+            self._render_day_resource_drill, df, date, service_type, label, found, note, is_ai
         )
 
     def _render_day_resource_drill(self, df: pd.DataFrame, date: str, service_type: str,
-                                    label: str, found: bool, note: str | None) -> None:
+                                    label: str, found: bool, note: str | None,
+                                    is_ai: bool = False) -> None:
+        # Store kind so navigation decisions don't depend on the SERVICE_TYPE string.
+        if is_ai:
+            self._drill_day_resource_kind = "ai"
+        elif label == "Warehouse":
+            self._drill_day_resource_kind = "warehouse"
+        else:
+            self._drill_day_resource_kind = "other"
+
         self._reset_table()
         table = self.query_one(DataTable)
         note_suffix = f"  ·  ⚠ {note}" if note else ""
@@ -706,12 +711,11 @@ class CostScreen(Vertical):
                 cells.append(str(int(row.get("REQUEST_COUNT", 0))))
             cells += [f"{pct:.1f}%", _bar(credits / max_c)]
             table.add_row(*cells, key=str(row["RESOURCE_NAME"]))
-        upper = service_type.upper()
-        can_drill_users = (
-            upper == _WAREHOUSE_SERVICE_TYPE
-            or any(kw in upper for kw in _AI_SERVICE_KEYWORDS)
+        user_hint = (
+            "  ·  click to see users"
+            if self._drill_day_resource_kind in ("warehouse", "ai")
+            else ""
         )
-        user_hint = "  ·  click to see users" if can_drill_users else ""
         self._set_status(
             f"{service_type} — {date}  ·  {total:,.4f} credits{note_suffix}{user_hint}  ·  Esc to return"
         )
@@ -764,7 +768,7 @@ class CostScreen(Vertical):
             )
         query_hint = (
             "  ·  click user to see top queries"
-            if (self._drill_day_service_type or "").upper() == _WAREHOUSE_SERVICE_TYPE
+            if self._drill_day_resource_kind == "warehouse"
             else ""
         )
         self._set_status(
